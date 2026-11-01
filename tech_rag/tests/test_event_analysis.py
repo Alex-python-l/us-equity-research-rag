@@ -50,3 +50,15 @@ class EventTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             registry=EventEvidence(Path(td)/'e.sqlite3')
             with self.assertRaises(ValueError):registry.append('e',dict(reviewed_by='human',first_public_at='2026-10-20T00:00:00Z'),source_resolver=lambda v:None)
+
+    def test_equivalent_utc_clock_formats_and_append_only_versions(self):
+        with tempfile.TemporaryDirectory() as td:
+            registry=EventEvidence(Path(td)/'e.sqlite3')
+            source=dict(text='Synthetic actual revenue was 12 USD.',url='https://example.test/original',
+                published_at='2026-10-20T20:00:00+00:00',acquired_at='2026-10-21T00:00:00+00:00')
+            payload=dict(reviewed_by='human',ticker='NVDA',first_public_at='2026-10-20T20:00:00Z',event_facts=[
+                dict(version_id='v',quote=source['text'],url=source['url'],published_at='2026-10-20T20:00:00Z',acquired_at='2026-10-21T00:00:00Z')])
+            self.assertEqual(registry.append('e',payload,source_resolver=lambda v:source)['version'],1)
+            self.assertEqual(registry.append('e',payload,source_resolver=lambda v:source)['version'],2)
+            self.assertEqual(registry.latest('e')['first_public_status'],'reviewed_earliest_known')
+            self.assertEqual(registry.latest('e','2026-10-21T00:00:00Z'),{})

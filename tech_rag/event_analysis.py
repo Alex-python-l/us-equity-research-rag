@@ -71,6 +71,7 @@ def event_windows(first_public_at,as_of,days=(0,1,5),market='XNAS'):
     windows=[]
     for day in days:
         if type(day) is not int or not 0<=day<=252:raise ValueError('Invalid trading-day offset')
+        if index+day>=len(sessions):raise ValueError('Observation exceeds available exchange-calendar horizon')
         end=sessions[index+day][1]
         windows.append(dict(trading_day_offset=day,start=base.isoformat(),end=end.isoformat(),
             start_session=base.astimezone(ZoneInfo('America/New_York')).date().isoformat(),
@@ -182,9 +183,11 @@ class EventEvidence:
                 raise ValueError('Evidence quote not in trusted archived source')
             if item.get('url')!=source.get('url'):raise ValueError('Evidence URL differs from archived source')
             for key in ('acquired_at','published_at'):
-                if source.get(key)!=item.get(key):raise ValueError('Source clocks must match backend archive')
+                original=source.get(key);given=item.get(key)
+                if (original is None)!=(given is None) or (original is not None and utc_datetime(original)!=utc_datetime(given)):
+                    raise ValueError('Source clocks must match backend archive')
         if payload.get('first_public_at'):
-            if not payload.get('event_facts') or not any(i.get('published_at')==payload['first_public_at'] for i in payload['event_facts']):
+            if not payload.get('event_facts') or not any(i.get('published_at') and utc_datetime(i['published_at'])==utc_datetime(payload['first_public_at']) for i in payload['event_facts']):
                 raise ValueError('Public anchor must match a reviewed original source')
         novelty=payload.get('novelty_review')
         if novelty:
