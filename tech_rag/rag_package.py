@@ -41,6 +41,7 @@ class RagPackages:
         value=json.loads(row[1])
         if reference.get('ticker')!=(value.get('ticker') or value.get('guide',{}).get('ticker')):
             raise ValueError('RAG company mismatch')
+        if reference.get('analysis_time')!=value.get('analysis_time'):raise ValueError('RAG clock metadata mismatch')
         return value
 
     def verify(self, payload, reference):

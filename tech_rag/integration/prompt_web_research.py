@@ -225,7 +225,8 @@ def discuss_case(case,research,originals,*,directory,config_path,ledger,run_id):
     ledger.start_run(run_id,{'ticker':case['ticker'],'arm':case['arm'],'role':'discussion_and_final'})
     frozen=dict(ticker=case['ticker'],judged_at=case['analysis_time'],research_scope=case['prompt'],
         searched_research=research,source_originals=originals,market_data=None,historical_consensus=None,
-        research_memory=case.get('memory_snapshot',[]),memory_is_source_evidence=False)
+        research_memory=case.get('memory_snapshot',[]),memory_is_source_evidence=False,
+        rag=case.get('rag'),event_analysis_versions=case.get('event_analysis_versions',[]))
     previous=None
     for role in ('critical_discussion','final_review'):
         duty=('同时提出最强支持论证和最强反对论证，逐项审查事实与推断、事前预期、反证、传导条件。'
@@ -262,7 +263,7 @@ def discuss_case(case,research,originals,*,directory,config_path,ledger,run_id):
     ledger.finish_run(run_id,'completed');return dict(status='completed',discussion_file=str(folder/'critical_discussion_result.json'),final=previous)
 
 def run_prompt_research(ticker,*,guide,directory,paid_confirmed=False,config_path=None,ledger=None,
-                        memory_enabled=True,memory_namespace='production'):
+                        memory_enabled=True,memory_namespace='production',event_analysis_versions=None):
     """Independent single-shot route. It never changes normal news search.
 
     The four-case risk authorization is NOT inherited by interactive requests.
@@ -279,6 +280,7 @@ def run_prompt_research(ticker,*,guide,directory,paid_confirmed=False,config_pat
     from rag_package import RagPackages
     frozen=RagPackages().get(guide.get('rag'))
     if {k:v for k,v in guide.items() if k!='rag'}!=frozen['guide']:raise ValueError('RAG guide changed after freezing')
+    case['rag']=guide['rag'];case['event_analysis_versions']=event_analysis_versions or []
     from integration.research_memory import ResearchMemory
     memory=ResearchMemory() if memory_enabled else None
     case['memory_snapshot']=memory.context(case['ticker'],at,namespace=memory_namespace,arm='B') if memory else []
@@ -296,6 +298,9 @@ def run_prompt_research(ticker,*,guide,directory,paid_confirmed=False,config_pat
     compact={k:v for k,v in found.items() if k!='raw_model_text'}
     result=discuss_case(case,compact,originals,directory=folder/'discussion',config_path=config_path or ROOT.parent/'apikey.env',ledger=authority,run_id=identity+'_discussion')
     result.update(run_id=identity,native=compact,source_checks=originals,guide_id=guide.get('guide_id'),rag=guide.get('rag'))
+    if isinstance(result.get('final'),dict):
+        result['final']['rag']=guide.get('rag')
+        result['final']['event_analysis_versions']=case['event_analysis_versions']
     if result.get('status')=='completed' and memory:
         result['memory_id']=memory.record(identity,case['ticker'],'B',at,result['final'],namespace=memory_namespace)
     dump(folder/'result.json',result);return result
