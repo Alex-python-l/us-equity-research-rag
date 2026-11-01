@@ -51,7 +51,12 @@ def classify_research(assessment):
     gap=assessment.get('expectation_gap',{}).get('status')
     market=assessment.get('market_reaction',{}).get('status')
     if novelty=='no_new_fact':return 'archive_duplicate'
-    if market=='observed':return 'market_reaction_observed'
+    if market in ('observed','daily_observation_available'):return 'market_reaction_observed'
+    if novelty=='new_fact' and gap=='comparable_difference':
+        comparison=assessment['expectation_gap'].get('comparison',{})
+        differences=comparison.get('difference_vs_issuer_guidance',[])+comparison.get('difference_vs_named_forecast',[])
+        if differences and any(d['position']!='within_range' for d in differences):return 'priority_verification'
+        if differences:return 'routine_tracking'
     if novelty=='new_fact' and gap=='credible_difference':return 'priority_verification'
     if novelty=='new_fact' and gap=='consistent':return 'routine_tracking'
     return 'insufficient_information'
@@ -101,16 +106,21 @@ class MonitorRuntime:
         self._search=search;self._fetch=fetch;self.agent=agent;self.market=market
         self._stop=threading.Event();self.thread=None;self.last_tick=None;self.last_error=None
         self._execution_lock=threading.Lock()
+        self._request_context=threading.local()
+        self.maintenance=None
+        self.evidence=None
 
     def search(self,task,as_of,**kwargs):
         if self._search:return self._search(task,as_of,**kwargs)
         from integration.industry_news import search_yahoo
-        return search_yahoo(task,as_of,max_results=3,cache_dir=self.state/'discovery',transport_limit=10)
+        return search_yahoo(task,as_of,max_results=3,cache_dir=self.state/'discovery',transport_limit=10,
+                            before_request=getattr(self._request_context,'reserve',None))
 
     def fetch(self,item,as_of,**kwargs):
         if self._fetch:return self._fetch(item,as_of,**kwargs)
         from integration.news_body import fetch_article
-        return fetch_article(item,as_of,archive_dir=self.state/'originals',max_chars=9000)
+        return fetch_article(item,as_of,archive_dir=self.state/'originals',max_chars=9000,
+                             before_request=getattr(self._request_context,'reserve',None))
 
     def events(self,plan_id=None,as_of=None):
         cutoff=utc(as_of) if as_of else None;out=[]
@@ -140,9 +150,18 @@ class MonitorRuntime:
     def _require_active(self,plan):
         if self.store and self.store.get_plan(plan)['status']!='active':
             raise PlanInactive('计划已暂停或结束')
+        run_id=getattr(self._request_context,'owner',None)
+        if run_id and self.store:
+            try:self.store.assert_owner(run_id)
+            except ValueError:raise PlanInactive('运行租约或确认版本已失效') from None
 
     def execute(self,run,*,now=None):
         at=utc(now);stamp=at.isoformat();config=run['config'];plan=run['plan_id']
+        def reserve_transport():
+            self._require_active(plan)
+            self.data.reserve(plan,'requests',1,config['budgets']['requests_per_day'],utc().isoformat())
+        self._request_context.reserve=reserve_transport
+        self._request_context.fixed_clock=now is not None
         base=dict(status='failed',kind=run['kind'],new_items=0,llm_calls=0,watermark=None,
                   judged_at=stamp,errors=[],coverage='Yahoo相关性抽样；不保证覆盖全部新闻；仅确认成功的查询推进检查点。')
         try:
@@ -153,7 +172,18 @@ class MonitorRuntime:
                 return base
             if run['kind']=='fundamental':
                 events=self.events(plan)
-                base.update(status='success',events=len(events),fundamental_summary=[dict(event_id=e['event_id'],assessment=e['assessment'],classification=e['classification']) for e in events[:20]],note='汇总已有研究版本，保留待核实事项；本轮没有新增内容，不调用大模型。')
+                from zoneinfo import ZoneInfo
+                market_date=at.astimezone(ZoneInfo('America/New_York')).date()
+                month_start=market_date.replace(day=1)
+                quarter_start=market_date.replace(month=((market_date.month-1)//3)*3+1,day=1)
+                windows={}
+                for cadence in config['analysis']['fundamental'].get('cadences',[]):
+                    start=month_start if cadence=='monthly' else quarter_start
+                    selected=[e for e in events if utc(e.get('published_at') or e['first_seen_at']).astimezone(ZoneInfo('America/New_York')).date()>=start]
+                    windows[cadence]=dict(start_date=start.isoformat(),end_date=market_date.isoformat(),
+                        events=[dict(event_id=e['event_id'],assessment=e['assessment'],classification=e['classification']) for e in selected],
+                        scope='saved event observations in this calendar period; not a full financial statement analysis')
+                base.update(status='success',events=len(events),fundamental_windows=windows,fundamental_summary=[dict(event_id=e['event_id'],assessment=e['assessment'],classification=e['classification']) for e in events[:20]],note='按月／季度窗口整理已保存事件，不将其冒充完整财报分析；没有新增内容时零大模型调用。')
                 return base
             if run['kind']=='event_followup':return self._followup(run,at,base)
             guide=self.planner.get_guide(run['guide_id'])
@@ -188,13 +218,26 @@ class MonitorRuntime:
                     # reserve four including all allowed redirects. Unused
                     # reservations remain charged to stay below the cap.
                     self._require_active(plan)
-                    self.data.reserve(plan,'requests',10,config['budgets']['requests_per_day'],stamp)
+                    if self._search:self.data.reserve(plan,'requests',10,config['budgets']['requests_per_day'],stamp)
                     result=self.search(task,stamp)
+                    if any(e.get('type')=='DailyBudgetStop' for e in result.get('errors',[])):raise DailyBudgetStop('Transport budget reached')
                     if result.get('status') not in ('candidates','no_candidates','no_eligible_candidates'):
                         base['errors'].append('新闻源未成功返回：'+str(result.get('status','unknown')));return base
                     with self.data.db() as db:db.execute('INSERT OR REPLACE INTO discovery_cache VALUES (?,?)',(key,encoded(result)))
                 outcomes.append({k:result.get(k) for k in ('status','network_calls','calls','real_network_executed','shared_cache_used')})
-                for item in result.get('items',[])[:6]:
+                pending=[]
+                # Resume saved unfinished stages even if Yahoo no longer returns the item.
+                with self.data.db() as db:
+                    for saved in db.execute('SELECT * FROM events WHERE plan_id=?',(plan,)).fetchall():
+                        saved_event=json.loads(saved['payload'])
+                        if saved_event.get('topic_id')!=topic['id']:continue
+                        latest=db.execute('SELECT payload FROM judgments WHERE event_id=? ORDER BY version DESC LIMIT 1',(saved['event_id'],)).fetchone()
+                        state=json.loads(latest[0]).get('agent_status') if latest else 'pending_source_verification'
+                        if state not in ('pending_source_verification','deferred_model_budget_or_cadence'):continue
+                        article=db.execute('SELECT payload FROM shared_news WHERE news_id=?',(saved['news_id'],)).fetchone()
+                        if article:pending.append(json.loads(article[0]))
+                items=list({digest([i.get('url'),i.get('provider_published_at') or i.get('pubtime'),i.get('title')]):i for i in pending+result.get('items',[])}.values())
+                for item in items[:6]:
                     public=item.get('provider_published_at') or item.get('pubtime')
                     if public:
                         try:
@@ -209,7 +252,8 @@ class MonitorRuntime:
                         existing=db.execute('SELECT event_id FROM events WHERE plan_id=? AND news_id=?',(plan,identity)).fetchone()
                         if existing:
                             previous=db.execute('SELECT payload FROM judgments WHERE event_id=? ORDER BY version DESC LIMIT 1',(existing[0],)).fetchone()
-                            if not previous or json.loads(previous[0]).get('agent_status')!='agent_error':continue
+                            if previous and json.loads(previous[0]).get('agent_status') not in (
+                                'pending_source_verification','deferred_model_budget_or_cadence'):continue
                         old=db.execute('SELECT payload,first_seen_at FROM shared_news WHERE news_id=?',(identity,)).fetchone()
                         if old:item={**json.loads(old['payload']),**item};first_seen=old['first_seen_at']
                         else:
@@ -233,7 +277,7 @@ class MonitorRuntime:
                     if cached:body=json.loads(cached[0])
                     else:
                         self._require_active(plan)
-                        self.data.reserve(plan,'requests',4,config['budgets']['requests_per_day'],stamp)
+                        if self._fetch:self.data.reserve(plan,'requests',4,config['budgets']['requests_per_day'],stamp)
                         body=self.fetch(item,stamp)
                         # Failed acquisition is retried on a scheduled review;
                         # it is not promoted to an empty verified article.
@@ -259,12 +303,15 @@ class MonitorRuntime:
                             except Exception as exc:
                                 agent_failed=True;agent_status='agent_error';base['errors'].append('新闻研究调用失败：'+type(exc).__name__)
                         else:agent_status='deferred_model_budget_or_cadence'
-                    judgment=dict(judged_at=stamp,assessment=assessment,classification=classify_research(assessment),agent_status=agent_status,
+                    self._analyse_event(run,event,assessment,stamp)
+                    judgment=dict(judged_at=stamp if now is not None else utc().isoformat(),assessment=assessment,classification=classify_research(assessment),agent_status=agent_status,
                         task=task_out,remaining_actions=['核查首次公开时间及此前报道','补齐首次披露之前的可得预期','请求行情模块和排查同期混杂事件'],
                         market_request=self.market_request(config,event),fact_confidence='unknown',verification_priority='待核实',impact_path=topic.get('impact_path'))
-                    judgment.update({k:event.get(k) for k in ('published_at','source_status','original_version')})
+                    judgment.update({k:event.get(k) for k in ('published_at','source_status','original_version','first_public_at','first_public_status','evidence_version')})
                     with self.data.db() as db:db.execute('INSERT OR IGNORE INTO events VALUES (?,?,?,?)',(event_id,plan,identity,encoded(event)))
-                    self.data.append_judgment(event_id,judgment);new.append(event_id)
+                    self._require_active(plan)
+                    self.data.append_judgment(event_id,judgment)
+                    if not existing:new.append(event_id)
                     self._schedule_reviews(run,event,at)
                     self._disclosure_reviews(run,event,body,at)
                 positions.append((plan,topic['id'],stamp))
@@ -282,6 +329,8 @@ class MonitorRuntime:
         except Exception as exc:
             # Only error type reaches UI; provider/credential strings do not.
             base['errors'].append(type(exc).__name__);return base
+        finally:
+            self._request_context.reserve=None
 
     def _can_call_agent(self,plan,config,at):
         if config['budgets']['llm_calls_per_day']<=0:return False
@@ -311,9 +360,40 @@ class MonitorRuntime:
 
     @staticmethod
     def market_request(config,event):
-        return dict(status='pending_integration',ticker=config['ticker'],market=config['market'],anchor=event.get('published_at'),
+        return dict(status='pending_verification',ticker=config['ticker'],market=config['market'],anchor=event.get('first_public_at'),
+                    anchor_status=event.get('first_public_status','unknown'),
                     windows=config['analysis']['event'].get('trading_days',[]),metrics=['price_return','volume_ratio','relative_return'],
                     causal_attribution='unknown')
+
+    def _analyse_event(self,run,event,assessment,stamp):
+        from event_analysis import comparable_gap
+        judged=stamp if getattr(self._request_context,'fixed_clock',False) else utc().isoformat()
+        evidence=self.evidence.latest(event['event_id'],judged) if self.evidence else {}
+        if evidence:
+            event.update({k:v for k,v in evidence.items() if k not in ('baselines','event_facts')})
+            event['evidence_version']=evidence['version']
+        gap=comparable_gap(event,evidence.get('baselines',[]),judged)
+        novelty=evidence.get('novelty_review')
+        if novelty:
+            assessment['information_novelty']=dict(status=novelty['status'],summary=novelty['reason'],
+                evidence_ids=[v['version_id'] for v in evidence.get('event_facts',[])],reviewed_by=evidence['reviewed_by'])
+        assessment['expectation_gap']={'status':gap['status'],'summary':'分开比较公司指引、具名预测与市场一致预期；缺项未知。',
+                                       'comparison':gap,'evidence_ids':[b.get('version_id') for b in evidence.get('baselines',[])]}
+        if self.market and run['config']['analysis']['event']['enabled']:
+            self._require_active(run['plan_id'])
+            try:
+                if getattr(self.market,'accounted_transport',False):
+                    observed=self.market(self.market_request(run['config'],event),
+                        as_of=stamp if getattr(self._request_context,'fixed_clock',False) else 'current',
+                        before_request=getattr(self._request_context,'reserve',None))
+                else:
+                    self.data.reserve(run['plan_id'],'requests',2,run['config']['budgets']['requests_per_day'],stamp)
+                    observed=self.market(self.market_request(run['config'],event),as_of=stamp)
+            except (DailyBudgetStop,PlanInactive):raise
+            except Exception as exc:observed=dict(status='unknown',error_type=type(exc).__name__)
+            assessment['market_reaction']={'status':observed.get('status','unknown'),
+                'summary':'程序计算的日线观察，不证明事件因果或已定价程度。','metrics':observed,'evidence_ids':[]}
+        return assessment
 
     def _schedule_reviews(self,run,event,at):
         if not self.store:return
@@ -343,7 +423,8 @@ class MonitorRuntime:
         if not event:base['errors'].append('待复核事件不存在');return base
         stamp=at.isoformat();config=run['config']
         self._require_active(run['plan_id'])
-        self.data.reserve(run['plan_id'],'requests',4,config['budgets']['requests_per_day'],stamp)
+        if self._fetch:self.data.reserve(run['plan_id'],'requests',4,config['budgets']['requests_per_day'],stamp)
+        previous_version=event.get('original_version')
         body=self.fetch(event,stamp)
         if body.get('eligible'):
             event.update(published_at=body.get('published_at'),source_status=body.get('status','body_verified'),original_version=body.get('version_id'))
@@ -351,22 +432,23 @@ class MonitorRuntime:
         task=self.planner.event_task(config['ticker'],event,as_of=stamp)
         assessment=empty_assessment('复核时点仍需核实历史预期、影响路径与行情。')
         status='pending_source_verification'
-        if body.get('eligible') and self.agent and self._can_call_agent(run['plan_id'],config,at):
+        unchanged=body.get('version_id') and body.get('version_id')==previous_version
+        if unchanged:
+            status=event.get('agent_status','research_pending_review')
+            for dim in ('information_novelty','fundamental_impact'):
+                if event.get('assessment',{}).get(dim):assessment[dim]=event['assessment'][dim]
+        if body.get('eligible') and not unchanged and self.agent and self._can_call_agent(run['plan_id'],config,at):
             self._require_active(run['plan_id'])
             self.data.reserve(run['plan_id'],'llm',1,config['budgets']['llm_calls_per_day'],stamp)
             with self.data.db() as db:db.execute('INSERT OR REPLACE INTO agent_calls VALUES (?,?)',(run['plan_id'],stamp))
             base['llm_calls']=1
             assessment=self._validate_assessment(self.agent(event=event,task=task,body=body,topic={},as_of=stamp),body,assessment)
             status='research_pending_review'
-        if self.market and config['analysis']['event']['enabled']:
-            self._require_active(run['plan_id'])
-            self.data.reserve(run['plan_id'],'requests',2,config['budgets']['requests_per_day'],stamp)
-            try:
-                observed=self.market(self.market_request(config,event),as_of=stamp)
-                assessment['market_reaction']={'status':observed.get('status','unknown'),'summary':'程序计算的观察，不证明新闻因果。','metrics':observed,'evidence_ids':[]}
-            except Exception:assessment['market_reaction']['summary']='行情模块未成功返回，未知。'
-        version=self.data.append_judgment(event_id,dict(judged_at=stamp,assessment=assessment,classification=classify_research(assessment),task=task,
+        self._analyse_event(run,event,assessment,stamp)
+        self._require_active(run['plan_id'])
+        version=self.data.append_judgment(event_id,dict(judged_at=stamp if getattr(self._request_context,'fixed_clock',False) else utc().isoformat(),assessment=assessment,classification=classify_research(assessment),task=task,
             agent_status=status,published_at=event.get('published_at'),source_status=event.get('source_status'),original_version=event.get('original_version'),
+            first_public_at=event.get('first_public_at'),first_public_status=event.get('first_public_status'),evidence_version=event.get('evidence_version'),
             remaining_actions=['继续核实事前预期与经营影响；不得仅因价格变化结束基本面跟踪。']))
         base.update(status='success',research_status='pending_verification',event_id=event_id,judgment_version=version,
             note='本轮采集与任务保存完成；研究核实尚未完成，未核实字段仍为未知。');return base
@@ -383,10 +465,29 @@ class MonitorRuntime:
                 self.last_tick=datetime.now(UTC).isoformat()
                 run=self.store.claim_due() if self.store else None
                 if run:
-                    result=self.execute(run)
-                    self.store.finish_run(run['run_id'],'success' if result['status'] in ('success','no_new') else 'failed',result,
-                        watermark=result.get('watermark'),error=';'.join(result.get('errors',[])) or None)
-                    if result['status'] in ('success','no_new'):self._commit_positions(result.get('topic_positions',[]))
+                    self.run_claimed(run)
+                elif self.maintenance:self.maintenance.tick()
                 self.last_error=None
             except Exception as exc:self.last_error=type(exc).__name__
             self._stop.wait(2)
+
+    def run_claimed(self,run):
+        """Renew while working; a recovered stale owner cannot commit or fetch."""
+        with self._execution_lock:
+            heartbeat_stop=threading.Event()
+            def heartbeat():
+                while not heartbeat_stop.wait(20):
+                    try:self.store.renew_lease(run['run_id'])
+                    except Exception:return
+            self._request_context.owner=run['run_id']
+            thread=threading.Thread(target=heartbeat,daemon=True);thread.start()
+            try:
+                result=self.execute(run)
+                self.store.assert_owner(run['run_id'])
+                status='success' if result['status'] in ('success','no_new') else ('deferred' if result['status']=='budget_exhausted' else 'failed')
+                self.store.finish_run(run['run_id'],status,result,watermark=result.get('watermark'),
+                    error=';'.join(result.get('errors',[])) or None)
+                if status=='success':self._commit_positions(result.get('topic_positions',[]))
+                return result
+            finally:
+                heartbeat_stop.set();thread.join(timeout=2);self._request_context.owner=None

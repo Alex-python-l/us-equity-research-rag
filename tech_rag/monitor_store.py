@@ -176,6 +176,20 @@ class MonitorStore:
                       'calendar': schedule['calendar'], 'dependencies': deepcopy(dependencies),
                       'blockers': blockers, 'changes': changes, 'base_version': draft['base_version'],
                       'previewed_at': now.isoformat()}
+            cursor=now;end=now+timedelta(days=1);rounds=0
+            if not schedule['errors']:
+                from monitor_schedule import _calendar,_next
+                calendar,_=_calendar(draft['config'],max(now,utc_datetime(draft['config']['lifecycle']['start_at'])))
+                while rounds<1441:
+                    point=_next(draft['config'],'search',cursor,calendar)
+                    if not point or point>=end:break
+                    rounds+=1;cursor=point
+            query_count=min(2,len(draft['config'].get('topic_ids',[])) or 2)
+            ceiling=rounds*query_count*(10+3*4)
+            result['capacity']=dict(search_rounds_next_24h=rounds,request_upper_bound_without_shared_cache=ceiling,
+                daily_request_cap=draft['config']['budgets']['requests_per_day'],
+                full_worst_case_coverage=ceiling<=draft['config']['budgets']['requests_per_day'],
+                note='Upper bound only, not expected usage. Requests are charged before actual transport; budget can defer later searches.')
             digest = hashlib.sha256(_json(result).encode('utf-8')).hexdigest()
             result['confirmation_hash'] = digest
             db.execute('UPDATE monitor_drafts SET preview=?,confirmation_hash=? WHERE draft_id=?', (_json(result), digest, draft_id))
@@ -321,7 +335,7 @@ class MonitorStore:
         now = utc_datetime(now)
         if status in ('success', 'succeeded'):
             status = 'success'
-        elif status not in ('failed', 'skipped', 'blocked'):
+        elif status not in ('failed', 'skipped', 'blocked', 'deferred'):
             raise ValueError('unsupported run status')
         result_json = _json(result)
         with self._db(write=True) as db:
@@ -332,7 +346,10 @@ class MonitorStore:
                        (status, now.isoformat(), result_json, str(error) if error is not None else None, run_id))
             plan = db.execute('SELECT version,status FROM monitor_plans WHERE plan_id=?', (run['plan_id'],)).fetchone()
             obsolete = plan is None or plan['version'] != run['version'] or plan['status'] == 'ended'
-            if status == 'failed' and run['attempt'] < self.MAX_ATTEMPTS and not obsolete:
+            if status=='deferred' and not obsolete:
+                retry_at=(now+timedelta(days=1)).replace(hour=0,minute=0,second=0,microsecond=0)
+                db.execute("UPDATE monitor_jobs SET status='pending',due_at=?,attempt=MAX(0,attempt-1) WHERE job_id=?",(retry_at.isoformat(),run['job_id']))
+            elif status == 'failed' and run['attempt'] < self.MAX_ATTEMPTS and not obsolete:
                 retry_at = now + timedelta(seconds=60 * (2 ** (run['attempt'] - 1)))
                 db.execute("UPDATE monitor_jobs SET status='pending',due_at=? WHERE job_id=?", (retry_at.isoformat(), run['job_id']))
             else:
@@ -345,3 +362,16 @@ class MonitorStore:
                 if current is None or value > utc_datetime(current):
                     db.execute('UPDATE monitor_plans SET watermark=? WHERE plan_id=?', (value.isoformat(), run['plan_id']))
             return {'run_id': run_id, 'status': status}
+
+    def assert_owner(self,run_id,now=None):
+        at=utc_datetime(now)
+        with self._db() as db:
+            row=db.execute("SELECT 1 FROM monitor_runs r JOIN monitor_plans p ON p.plan_id=r.plan_id WHERE r.run_id=? AND r.status='running' AND r.lease_until>? AND p.status='active' AND p.version=r.version",(run_id,at.isoformat())).fetchone()
+        if not row:raise ValueError('Run lease or confirmed configuration is no longer owned')
+
+    def renew_lease(self,run_id,now=None):
+        at=utc_datetime(now)
+        with self._db(write=True) as db:
+            row=db.execute("SELECT 1 FROM monitor_runs r JOIN monitor_plans p ON p.plan_id=r.plan_id WHERE r.run_id=? AND r.status='running' AND r.lease_until>? AND p.status='active' AND p.version=r.version",(run_id,at.isoformat())).fetchone()
+            if not row:raise ValueError('Cannot renew expired or obsolete run')
+            db.execute('UPDATE monitor_runs SET lease_until=? WHERE run_id=?',((at+timedelta(seconds=self.LEASE_SECONDS)).isoformat(),run_id))

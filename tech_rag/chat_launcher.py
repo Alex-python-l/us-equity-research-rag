@@ -19,6 +19,7 @@ def running():
         with build_opener(ProxyHandler({})).open(URL + '/api/health', timeout=2) as response:
             state = json.load(response)
         if state.get('application') == 'financial-research-workspace':
+            if state.get('version')!='monitor-v2':raise RuntimeError('An older research server is listening; stop it normally before loading the new backend. No process was terminated.')
             return True
         if state.get('rag_only') is not True or state.get('news_enabled') is not False:
             raise RuntimeError('Port 8876 is occupied by another application; no changes made.')
