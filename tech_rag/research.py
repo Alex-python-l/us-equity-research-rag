@@ -98,7 +98,8 @@ class ResearchEngine:
   self.chunks=chunks if chunks is not None else readl(self.snapshot.file('chunks.jsonl'))
   self.index=KeywordIndex(index_path or ROOT/f'state/tech_lexical_{backend}_{self.snapshot.generation}.sqlite3',self.chunks)
   self.chunks_by_id=self.index.by_id
-  self.links=build_links(chunks=self.chunks,evidence=list(self.tools.evidence.values()),relations=self.tools.relations)
+  self.links=build_links(chunks=self.chunks,evidence=list(self.tools.evidence.values()),
+   records=readl(self.snapshot.file('embedded_records.jsonl')),relations=self.tools.relations)
   self.e2c=defaultdict(list);self.c2e=defaultdict(list);self.e2r=defaultdict(list)
   for link in self.links['evidence_chunk_links']:
    self.e2c[link['evidence_id']].append(link['chunk_id']);self.c2e[link['chunk_id']].append(link['evidence_id'])

@@ -26,7 +26,7 @@ def check():
     bad = []
     for name,oid in blobs:
         p = ROOT / name
-        if p.name in ('.env', 'apikey.env', '.env.enterprise') or any(x in p.parts for x in ('.venv', 'state', 'raw', 'text', 'output', '__pycache__')):
+        if p.name in ('.env', 'apikey.env', '.env.enterprise') or any(x in Path(name).parts for x in ('.venv', 'state', 'raw', 'text', 'output', '__pycache__')):
             bad.append((name, 'excluded runtime/config path'))
         # Inspect the exact indexed blob, which is what a subsequent commit publishes.
         data=subprocess.check_output(['git','cat-file','blob',oid],cwd=ROOT)

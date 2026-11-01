@@ -2,5 +2,5 @@
 -r financial_rag/requirements.txt
 -r tech_rag/requirements-monitor.txt
 -e ./tech_rag/vendor/TradingAgents
-beautifulsoup4==4.14.3
+beautifulsoup4==4.15.0
 PyMuPDF
