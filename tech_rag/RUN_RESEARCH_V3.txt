@@ -1,0 +1,65 @@
+科技产业链RAG优化与TradingAgents证据约束集成｜2026-10-18
+
+补充更新：已启用当前时点新闻获取（2026-10-18）。
+online + current现在先调用search_news（已安装的Yahoo/yfinance SDK），再company_research、source_followup；最多3个新闻工具轮次、整个run最多12次模型调用、所有宿主工具合计最多4次。
+search_news只返回标题/摘要/链接/提供方时间，保存在news_candidates，均为candidate_metadata；没有正文核验，不进入evidence_registry、事件事实或Neo4j审核断言。历史模式不提供此工具，也不会联系实时新闻源。宏观/行情/预测市场权限仍关闭。
+本次实际验证使用真实框架+真实新闻SDK+真实本地RAG，模型为controlled替身，未调用付费LLM；MU取回5条候选。新在线工具顺序另有HTTP接口契约测试，本次未重跑付费在线LLM。
+免费验证命令：
+  .\tech_rag\integration\.venv\Scripts\python.exe tech_rag/integration/run.py --ticker MU --question "美光最新HBM新闻及供应链背景" --as-of current --backend local --model-mode controlled --fetch-news --no-dense --output tech_rag/output/my_current_news.json
+controlled默认不联网取新闻，--fetch-news显式开启；online/current默认开启。SDK无须额外新闻API key，提供方可能限流或不可用，失败明确返回provider_unavailable，不能解释成没有新闻。
+更新报告：output/live_news_enable_report.json；实际运行：output/live_news_enabled_MU_controlled.json；测试日志：output/live_news_enable_tests.log。
+下面的v3已保存在线结果是此补充更新之前的运行，不能冒称新新闻路径已经真实LLM回归。不要为本次启用重建环境或重跑embedding。
+
+本入口运行官方TradingAgents图（固定commit e8f5503e9b86d5c2710b0c76b1f686703968c9df，version0.7.0）与真实RAG。实际执行情况、评测数字和剩余失败以RESULTS_V3_20261018.txt及output/v3_release_verification.json为准，不能把本运行说明当成已执行证明。
+旧v2、原油、原始财报与152条文档向量保留。没有LEAN、券商、订单或远程服务器操作。该入口输出研究假设和no_signal，不承诺事实语义无误、产业链完备或任何收益。
+
+环境与凭据
+工作目录：C:\Users\L\Desktop\化学RAG组织的仓库拉取
+原RAG解释器：financial_rag\.venv\Scripts\python.exe。
+框架解释器：tech_rag\integration\.venv\Scripts\python.exe；rag_runtime.pth继承原RAG site-packages，本地BGE仍在原位置，不复制/下载权重。
+Neo4j只读tech_rag\.env，固定Finance Desktop home尾部dbms-164b5ace-03b4-45cd-bc0f-ac9c533d6ef4及neo4j库。每个Neo后端运行先只读核验；失败不切库、不启动/重启服务。宿主审计写接口也重复核验。
+LLM只读调用者显式传入的配置路径。本次用户指定apikey.env，专用解析器兼容该文件带DeepSeek标记的单行格式，也接受显式DeepSeek dotenv/JSON；不搜索其他凭据，不更改原文件、不输出密钥。框架自带dotenv自动发现被bootstrap屏蔽。
+完整实际版本与vendor修改见output/v3_framework_dependency_versions.json及docs/tradingagents_v3_vendor.patch。vendor保留官方Git，两个hook文件有本地patch；不是无修改的上游版本。
+
+统一CLI（PowerShell，先设$env:PYTHONIOENCODING='utf-8'）
+.\tech_rag\integration\.venv\Scripts\python.exe tech_rag/integration/run.py --ticker MU --question "美光HBM供应受限的业务影响需要哪些条件？" --as-of current --backend neo4j --model-mode controlled --output tech_rag/output/my_MU_controlled.json
+.\tech_rag\integration\.venv\Scripts\python.exe tech_rag/integration/run.py --ticker TSM --question "CoWoS产能变化是否必然提高下游利润？" --as-of current --backend local --model-mode controlled --output tech_rag/output/my_TSM_controlled.json
+.\tech_rag\integration\.venv\Scripts\python.exe tech_rag/integration/run.py --ticker NVDA --question "历史具名晶圆与内存供应商，不能推断HBM型号" --as-of 2025-03-01T00:00:00+00:00 --backend neo4j --model-mode controlled --output tech_rag/output/my_NVDA_historical.json
+.\tech_rag\integration\.venv\Scripts\python.exe tech_rag/integration/run.py --ticker MU --question "美光HBM4 36GB 12H与48GB 16H量产和送样边界是什么？库存、认证与需求变化对交付有什么条件影响？" --as-of current --backend neo4j --model-mode online --llm-config apikey.env --output tech_rag/output/my_MU_online.json
+
+默认开启BGE关键审核文本检索、关键词和图检索。--no-dense仅用于明确标注的关键词+图诊断；不会对5026原文块提交embedding。--bad-rewrite可在controlled模式注入一个丢条件且升级股票收益的交易角色错误，供程序拦截验证；不是实际模型失真发生率估计。
+可选--event-json 指定收到的新闻JSON。仅headline/url会保持candidate_metadata；只有与已有原文同版本chunk_id/text精确对应且时点允许的内容才算取得/核验正文。未传新闻时使用已归档原始资料作为可复现输入fixture，不冒称实时新闻采集。
+可选--persist-audit由宿主显式写入研究审计标签；模型无此工具。保留旧数据，重复同run_id同内容幂等，改内容需新run_id。
+
+Python入口
+import sys
+sys.path.insert(0, 'tech_rag')
+from integration.framework import run_research
+result = run_research('MU', 'HBM供应受限的影响与条件', 'current', backend='neo4j', model_mode='controlled')
+# 实际在线：model_mode='online', llm_config_path='apikey.env'。
+# 返回纯JSON可序列化dict；可进一步包装LangGraph工具，外层不能将no_signal直接接订单。
+# 仅需原RAG EvidencePacket：from research import build_research_context，原接口继续可用。
+
+执行与数据规范
+官方News Analyst子图中的ToolNode实际注册company_research和source_followup，工具通过Command把证据包、注册表和调用记录写回共享状态。News→Bull/Bear→ResearchManager→Trader→三类Risk→PortfolioManager拓扑沿用上游工厂；新增EvidenceIntake与FinalEvidenceGate。未启用缺vintage的市场/宏观/预测/财务数值工具，禁用上游默认propagate、身份网络补查及事后memory settlement/reflection。
+每次run只冻结一次带时区analysis_time，全部工具使用同一temporal_context。历史模式排除未验证历史版本；日期不精确/当前网页不回填历史。current_as_collected也不代表回测可用。改变时点必须新建运行状态；旧RAG Agent跨轮缓存另有时间与指纹重核测试。
+默认新闻工具轮数2，模型最多12次调用、单次请求max_tokens=1800（usage按provider实际记录）、模型输入最多18000字符（继承字段/必需证据过大直接不足，不切掉条件或父证据）；HTTP零重试、连接10秒/读取45秒，提供方异常后打开熔断。RAG宿主工具总上限4，整个run的唯一C引用文本上限22000字符，首个包最多14000、下一包用剩余；每包最多10条结果、1800字符片段、2跳24路径。未用足预算不代表所有证据已充分。
+C_为同资料版本/位置/半开字符区间稳定引用，EV_为审核证据，断言有独立relation_id；引用原文与审核关系分开。evidence_observations保留重复命中渠道、页内覆盖和后来新增unknowns；C/EV稳定身份不因检索排序改变。原文从raw/text/chunks及source_url回查，表格单位/页码/段落仍保留。
+shared包含evidence_registry/evidence_observations/assertion_registry/event_registry/claim_ledger/unresolved_gaps/review_issues/strategy_hypotheses/research_gate。claim字段text/type/horizon对应用户要求claim_text/claim_type/impact_horizon；其余字段直接保留。每个ID为append-only版本列表，包含parent_versions/previous_version_hash/record_hash；accepted旧审计记录不意味着当前还能使用，eligible_claims递归核验最新父版本、新增未知项和完整性。
+完整原文整句或已审核同scope断言可成为原文事实引用；外部段落不能只截掉否定/条件。假设须有条件与不确定性，保留父产品、范围、时间、条件和unknowns。技术合作不能推采购，匿名客户不实名，业务不能无桥梁推确定收益。程序校验不是完整NLI/因果/经济真实性证明，semantic_validation_limits随结果输出。
+自由报告由接受的结构化判断重新渲染；被拒原话只留raw_role_outputs与ledger审计，不传进下游人类报告。事件以明确original_source_id/original_event_id去重，版本hash独立保存，多Agent赞同和转载不加独立事件数。价格/动量依赖仅标可能重叠，不加置信或认定因果。
+连续数值及任何事后收益不进新闻检索证据。integration/numeric_experiment.py是固定seed合成业务指标实验，output/v3_synthetic_information_experiment.json不是市场回测。
+
+验证与复现
+新旧单包同预算评测：financial_rag\.venv\Scripts\python.exe tech_rag/evaluate_v3.py --help。该脚本固定写v3路径，若要重跑请先复制完整现有v3报告/packet目录留档；本轮没有覆盖v2报告。核验已保存执行通常只需verify_v3，不必再次运行模型。冻结原24题和独立14题，先标注原文锚点，包含未卡片化及未知问题。评测失败文件不删除。
+真实图+替身验证：tech_rag\integration\.venv\Scripts\python.exe tech_rag/integration/validate_framework.py --backend local；再以--backend neo4j运行。该批次明确use_dense=False、两次工具机会，作为多轮图诊断，与单包dense融合基准分开。
+全部测试：设置TEMP/TMP为工作区tech_rag/state/test_tmp，然后用框架解释器 -m unittest discover -s tech_rag/tests -p 'test_*.py' -v。原金融venv会明确跳过可选框架测试，不能算真实图通过。
+已有执行产物核验：tech_rag\integration\.venv\Scripts\python.exe tech_rag/verify_v3.py --require-online。此命令不重跑embedding或覆盖v2，只验证本轮已保存执行和原数据SHA。
+
+Neo4j Desktop查看
+MATCH (r:TechResearchRun {audit_namespace:'research_v3'}) RETURN r.run_id,r.analysis_time,r.historical,r.fact_promotion_allowed;
+MATCH p=(r:TechResearchRun {audit_namespace:'research_v3'})-[:TECH_RESEARCH_HAS_CLAIM]->(c) RETURN p LIMIT 40;
+四类TechResearch*审计节点与TechAssertion原事实分区；条件性假设不会自动升为审核产业关系。完整证据映射在run.payload，role/claim版本有单独节点。
+
+本轮真实在线初轮与修订轮都保留，详见RESULTS_V3_20261018.txt；两轮22次HTTP而非每轮22次。后续新增运行须同样给出明确预算，勿自动无限重试。
+最终EV/C条件继承规则可不调用LLM重核已保存运行：financial_rag\.venv\Scripts\python.exe tech_rag/integration/revalidate_artifacts.py。当前78份全部当前usable IDs不变、旧ledger不改；审计accepted不可直接当现时可用。

@@ -1,0 +1,84 @@
+产业链研究工作区｜增量监控版本｜2026-10-22
+
+启动
+- 双击工作区根目录“启动RAG问答.cmd”；地址 http://127.0.0.1:8876 。
+- 或使用现有解释器：tech_rag\integration\.venv\Scripts\python.exe tech_rag\chat_launcher.py --no-browser
+- 已有旧版服务占用端口时，启动器明确报错，不擅自停止进程；需要用户授权再更新。
+- 后台worker随本地HTTP服务启动，只领取已确认任务。关闭网页不停止任务；关闭服务、退出系统或机器休眠会停止/延迟执行。
+- 服务重启后读取SQLite恢复。不会补跑停机期间所有周期；过期租约恢复，失败最多3次（60/120秒退避）。未安装Windows开机自启/系统服务。
+
+界面
+- 参照用户图片改为暖灰左侧导航、中央研究工作区、右侧真实来源和原文预览；窄屏折叠导航和来源。
+- 默认“交付新闻Agent”：输入NVDA/MU/TSM生成监控指南。当前知识库仅深度覆盖这三家公司，不为其他股票编造范围。
+- 股票指南由真实审核关系/原文校验确定对象、产品、条件，默认不调用模型；缓存按公司、时点、知识库指纹和规划器版本，刷新新增版本。
+- 原文、来源、公开时间和哈希版本单独后端保存；复制交付时仅复制简短agent_prompt。
+- 必要有据问答、只看原文、BGE开关、历史时点、追问、引用分页、JSON导出保留。
+- 事件核实模式只生成该事件9项补充任务；步骤result为空，不预填结论，不重新交付整份指南。
+- 笔记保存于当前浏览器localStorage，可导出，不属于原文证据。
+
+任务确认
+1. 生成指南，点击配置监控计划，选择主题和研究优先级。
+2. 生命周期、影响观察窗口、执行频率、检索范围独立配置。
+   月度/季度是基本面观察窗口；每天收盘后的汇总频率另设。
+3. 保存草稿只持久化；预览只校验。预览展示完整配置、差异、依赖和按真实日历计算的未来3次时间。
+4. 核对勾选后点击“确认并启用”。后端摘要hash绑定配置、不可变指南版本和原计划版本。
+5. 同一股票市场复用计划；修改频率/预算/来源/范围另存草稿，确认前旧配置继续。
+6. 可以暂停、恢复和结束。暂停/结束不会粗暴杀死已发出网络请求，但阻止接下来的外部调用。
+   end为终态，当前版本不支持结束后的同股票市场计划重新启用。
+- 默认候选：盘中30分钟/盘外120分钟；收盘+60分钟汇总；每周一09:00 Asia/Shanghai维护指南；事件+1/+5真实交易日复核。
+- 新指南不会偷偷更新已确认范围，需要再次预览确认。
+- 默认不允许临时加速；此功能未接入，开启会被拒绝。
+
+实际运行
+- Python后台worker + SQLite事务/租约，全局并发1；网页无执行定时器。
+- 每轮只发当前主题，按主题轮转，并分别保存每个主题成功水位；首次回溯与后续重叠范围独立于频率。
+- 复用integration.industry_news.search_yahoo。跨计划共享新闻/原文获取；针对股票分别保存事件和判断。
+- Yahoo是相关性抽样，不保证穷尽性或完整历史档案。接口错误不等同无新增；失败不推进成功水位。
+- 候选元数据先保存，正文不合格不调用模型。无新增不调用模型；模型异常保留已发现候选和核实任务。
+- 模型仅使用已有Flash和原state/rag_chat/budget.json；原30请求/100000tokens上限及未知usage硬停止不变。
+  本次不启用旧原生搜索；native_news_v6_20261020/budget.json未知消耗门禁保留，不新建账本绕过。
+- 每日请求预算以保守传输上限预留：Yahoo每查询最多10个HTTP，正文含重定向最多4个；未使用额度不退款。
+  模型每日次数和最短间隔独立。到预算后停止；无自动加速。
+- 公司官方投资者网站出现已取得合格正文的财务披露，会按配置触发旧事件复核；只凭媒体标题不触发该规则。
+- 保存provider公开时间、系统首次获取时间、版本发现时间、判断时点；同URL修订有family_id，判断版本不覆盖。
+- 判断按信息新增/预期差/市场反应/基本面影响/不确定性分别存储，缺数据返回unknown。
+- 单篇模型观察只成为reported_unverified，不证明首次披露、事前预期或市场因果。
+- 行情算术接口price_metrics计算收益/量比/相对收益；无接入数据不生成数字，不输出买卖指令。
+
+真实依赖与限制
+- exchange-calendars==4.13.2已安装在现有integration/.venv。XNAS若库无独立实现，明确标为XNYS美股交易时段别名。
+  使用真实休市、提前收盘、夏令时，后端统一UTC，预览显示用户时区。
+- Yahoo适配器已安装但网络可用性需要在用户确认后的真实执行中验证。尚未为验收擅自启用持续任务或发生周期费用。
+- 行情provider待接入；完整历史新闻/历史一致预期provider待接入。这些缺口在界面依赖和结果中明确显示。
+  新闻Agent目前能从合格正文提取有引文的观察；历史预期/首次披露的跨源任务仍待合适档案数据，绝不宣称已完成核实。
+- 通知目前仅工作区内持久化记录，无邮件/外部消息推送。
+- 自动审批额度限制导致宿主本地服务启动和浏览器在线验收受阻；测试日志不会冒充浏览器截图或真实新闻执行成功。
+
+接口
+GET /api/monitor/status /plans /runs /events /guide?id=...
+POST /api/monitor/guide /event-task /draft /preview /confirm /action
+保留 /api/chat /api/more；所有POST保持本机Host/Origin和CSRF校验。
+
+主要文件
+- monitor_planner.py：指南与事件任务、来源审计和版本。
+- monitor_schedule.py / monitor_store.py：真实日历、草稿确认、计划版本、租约与运行。
+- monitor_runtime.py / monitor_agent.py：增量发现、预算、去重、模型观察和事件复核。
+- monitor_api.py：依赖与HTTP协调。
+- chat_server.py / chat_launcher.py：路由与后台worker、启动版本检查。
+- chat_web/index.html style.css app.js monitor.js：三栏界面与确认交互。
+- integration/industry_news.py：可选单查询HTTP硬上限，原有接口默认行为兼容。
+
+测试与记录
+- 使用原integration/.venv；TEMP/TMP指向工作区state/monitor_validation/tmp，避免沙箱临时目录权限问题。
+- 测试命令：上述Python -m unittest discover -s tech_rag/tests
+- 新增tests/test_monitor_{planner,schedule,store,runtime,api}.py。
+- state/monitor_validation/保存回归日志；受控provider测试明确为合成数据，无真实网络/付费模型。
+- output/playwright/monitor_20261022/QA_inventory.txt记录尚待完成的浏览器验收项。
+
+新增：提示词交给大模型自主联网（不改变原新闻查询）
+- integration/prompt_web_research.py：原样agent_prompt→deepseek-v4-pro原生web_search→Flash正反讨论→Flash终审；原文与时间另行校验，未知项明确保留。
+- POST /api/monitor/prompt-research：ticker、guide_id、paid_confirmed=true。需显式确认单次付费动作；不能从“生成指南”隐式触发。当前普通入口因旧未知用量仍返回blocked_budget，不继承实验授权。
+- evaluation/run_prompt_conclusion_ab.py：结论级A/B驱动。--finish-saved复用完成的原生响应，兼容来源动作轨迹并执行尚未尝试的讨论；不会重新搜索或重试已经尝试的角色。
+- 用户此次明确取消token用量预算：仅检测批次USER_20261022_PROMPT_AB_NO_TOKEN_LIMIT不设总token门禁；原权威账本限制/旧未知记录原样保留，无新账本绕过。
+- 已真实完成NVDA/MU四组原生联网与八次讨论/终审，316273已知tokens。检测结果与缺陷见state/prompt_conclusion_ab_unlimited_20261022/REPORT.txt；执行完成不等于研究可靠性通过。
+- 新API代码需要服务下次正常加载后才可访问；本次未重启现有服务、未新增前端按钮、未启用周期任务。

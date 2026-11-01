@@ -1,0 +1,47 @@
+[
+  {
+    "ticker": "NVDA",
+    "report_period": "FY2025",
+    "period_end": "2025-01-26",
+    "metric": "segment_revenue",
+    "segment": "Compute & Networking",
+    "value": 116193,
+    "unit": "USD million",
+    "source_id": "NVDA_2025_10K",
+    "pdf_page": 41,
+    "table": "Revenue by Reportable Segments",
+    "available_at": "2025-02-27T12:00:00+00:00",
+    "actual_public_at": null,
+    "vintage_status": "issuer accession-matched filing copy; intraday time unverified"
+  },
+  {
+    "ticker": "NVDA",
+    "report_period": "FY2025",
+    "period_end": "2025-01-26",
+    "metric": "segment_revenue",
+    "segment": "Graphics",
+    "value": 14304,
+    "unit": "USD million",
+    "source_id": "NVDA_2025_10K",
+    "pdf_page": 41,
+    "table": "Revenue by Reportable Segments",
+    "available_at": "2025-02-27T12:00:00+00:00",
+    "actual_public_at": null,
+    "vintage_status": "issuer accession-matched filing copy; intraday time unverified"
+  },
+  {
+    "ticker": "NVDA",
+    "report_period": "FY2025",
+    "period_end": "2025-01-26",
+    "metric": "segment_revenue",
+    "segment": "Total",
+    "value": 130497,
+    "unit": "USD million",
+    "source_id": "NVDA_2025_10K",
+    "pdf_page": 41,
+    "table": "Revenue by Reportable Segments",
+    "available_at": "2025-02-27T12:00:00+00:00",
+    "actual_public_at": null,
+    "vintage_status": "issuer accession-matched filing copy; intraday time unverified"
+  }
+]

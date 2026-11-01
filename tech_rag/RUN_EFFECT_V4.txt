@@ -1,0 +1,64 @@
+科技RAG效果审查 v4 运行与续接说明｜2026-10-19
+
+先读RESULTS_V4_20261019.txt、effect_v4_20261018/quality_summary.json与cost_and_controls.json。
+当前不是已证明有效的自动交易系统。统一RAG入口仍是research.build_research_context，证据/工具只读。
+工作区C:\Users\L\Desktop\化学RAG组织的仓库拉取；集成解释器tech_rag/integration/.venv/Scripts/python.exe。
+Finance/neo4j只读配置tech_rag/.env；LLM仅显式读取用户授权apikey.env。不回显/搜索其他凭据。
+
+已完成实验，禁止直接重提付费批次
+主实验账本effect_v4_20261018/online/budget.json：63请求/358548 tokens，6最终完整primary cases。
+不再执行run_ab.py --online、recover_ab.py、repair_context_runs.py或finish_context_repairs.py。
+这些是保留的实际执行记录；已有配置/产物锁会拒绝重跑。未来新实验应另建版本并先冻结协议/预算。
+旧原18k协议与全部失败在online/、online_corrected/；修订后的3案在final_corrected/。
+final_runs/统一复制6案实际result/input/provider及SHA清单；原始来源文件仍保留。
+当前source-scope/uncertainty修复发生在主实验之后，主质量结果对应原始调用，不能声称已测最新修复收益。
+
+安全复核命令（不发LLM、不取实时新闻）
+PowerShell先设置：
+  Set-Location -LiteralPath 'C:\Users\L\Desktop\化学RAG组织的仓库拉取'
+  $env:PYTHONIOENCODING='utf-8'
+  $env:TEMP=Join-Path (Get-Location) 'tech_rag\state\test_tmp'
+  $env:TMP=$env:TEMP
+  & .\tech_rag\integration\.venv\Scripts\python.exe -m unittest discover -s tech_rag/tests -v
+  & .\tech_rag\integration\.venv\Scripts\python.exe tech_rag/effect_v4_20261018/analyze_funnel.py --runs tech_rag/effect_v4_20261018/final_runs --grades tech_rag/effect_v4_20261018/methods/grading/all_grades.json --out tech_rag/effect_v4_20261018/funnel/final_graded
+  & .\tech_rag\integration\.venv\Scripts\python.exe tech_rag/effect_v4_20261018/verify_release.py
+verify_release只读真实Finance且强制验证home；query_vector被精确缓存替代，不初始化BGE或发模型请求。
+不要调用旧evaluate_v3的报告重写入口。v2/v3源文件、标注与报告必须保留。
+
+统一RAG Python示例（从tech_rag目录或将它放到sys.path）
+  from research import build_research_context
+  packet = build_research_context('美光','HBM供给限制及适用条件','current',{'use_dense':False},backend='local')
+  # 严格历史：带时区ISO，例如2025-03-01T00:00:00+00:00；current是按已采集快照。
+使用budget中的use_dense=True时继续调用已有BGE-M3及查询缓存；文档仍为原152向量，未全量embedding。
+真实Neo后端backend='neo4j',config='.../tech_rag/.env'，不得自动切库/启动服务。
+分页用相同问题/时点/预算和返回cursor；TradingAgents company_research现在也接受只传cursor、不传question，由宿主绑定原问题。
+原文命中仍是raw_original_unreviewed_as_relation，不能直接当已审核供应/因果关系。
+
+实现位置
+- research.py/retrieval_v3.py/lexical.py：检索、时间内BM25和线程快照；scope不通过相似度猜测。
+- integration/effect_framework.py：官方TradingAgents图的空白契约实验扩展；A/B同9角色、共同新闻归档核验。
+- effect_models.py/effect_context.py：实际上下文、请求审计；无答案模板，tool结果/游标/预算显式送达。
+- effect_cost.py：持久账本，pending/未知usage即停止；每轨迹12、总72、400000阈值禁止新请求。
+  TSM B修正支路携4旧响应计算11次上限，3废弃请求仍计总账，不当独立证据。
+- context_codec.py：完整字段表格与shared_text无损编码；解码可逐对象比对，禁止裁掉父信息。
+- scope_context.py：核对原HTML SHA、全文块映射、原文坐标与时间，再给出同版本发布方结构标签。
+  非HTML/PDF不伪造标签；历史未验证版本不补当前标签；标签最多2条/400文本字符，计实际context预算。
+- governance.py：不可变判断版本、父继承、证据、收益桥门禁；accepted不代表语义/因果已证明。
+- integration/models.py/framework.py/run.py：旧模板系统模式仍保留，不能混称主空白契约LLM效果。
+
+实验与文件规范
+design/：12新题、三案、公用news_input与evaluator-only private_rubric、SHA冻结清单。
+methods/：可信度审查、冻结评分规范；grading/含NVDA全原子、MU/TSM逐判断及最终五项。
+retrieval/：旧38纯关键词开发诊断、50题真实BGE/Neo单包对照、失败A-E及V2_02退化。
+funnel/：corpus/index/candidate/packet/context/claim/parent/final；机械位置覆盖与语义支持分列。
+guard_fix/：同原始提案离线重核，不是生成新回答；scope_fix/：新口径字段实际序列化proof，0付费。
+baseline/manifest：8原始数据和31旧报告SHA；release_verification：真实Finance/未来资料加入不改变历史排名。
+final_run_manifest：每份实际模型输入/原始provider输出来源与SHA；output截断、格式错、事实错分别计。
+evidence_usage_cases.json：有用背景、误拒、已送达未用、错误未晋升与漏拦的精确实例；quality_cost_summary.csv便于比较6案。
+DELIVERY_MANIFEST.json：最终代码指纹、162项测试、只读验证与总账；credential_exposure_check仅记录显式授权API key的路径级扫描结果，不记录值。
+
+剩余工作需如实保留
+1. MU/TSM中间角色自由报告未逐原子穷尽复审，不能把833条混合粒度评分直接相除作总准确率。
+2. 来源结构标签与谨慎边界修复尚无新的真实LLM质量对照；不要用离线测试声称回答已变好。
+3. 关键CoWoS-R/L和匿名客户页的定向补查、引用与结论语义绑定、研究报告渲染仍是瓶颈。
+4. 九角色复述成本较高，尚未证明比更短研究流程值得；无策略/收益结论。

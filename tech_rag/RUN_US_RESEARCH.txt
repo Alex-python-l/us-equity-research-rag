@@ -1,0 +1,90 @@
+美股研究增量入口｜2026-10-27
+
+配置
+用户授权的数据配置保存在tech_rag/.env，Neo4j原设置保持不变；该文件受根目录与tech_rag的.gitignore忽略。
+integration/source_config.py只加载FRED/SEC/Alpha/TypeSafe白名单，不自动发现其他凭据文件，不导出LLM Key。
+已有进程环境的非空值优先于.env；修改后需启动新进程。
+LLM继续显式读取根目录apikey.env，不要求再把密钥复制到其他文件。
+
+本次单次真实数据探测
+FRED：HTTP200，返回有效series。
+SEC：HTTP200，返回有效发行人submissions；项目名称US Equity Research Workspace，联系身份已配置。
+Alpha：HTTP200但返回Information/Note类额度或权限提示，不视为数据可用。需核对该账户额度/接口权限；保留Yahoo默认数据路线。
+TypeSafe：未配置，没有调用。
+诊断：state/us_restore_20261027/source_probe.json。只记录状态，不记录密钥、带密钥URL或provider原始报错。
+
+TypeSafe怎么配
+1. 登录官方https://console.typesafe.ai，在控制台创建自己的API Key。
+2. 在tech_rag/.env已有的TYPESAFE_API_KEY=后填入Key，不要粘贴到聊天。
+3. 保留已填的TYPESAFE_BASE_URL=https://api.typesafe.ai，TYPESAFE_DEFAULT_MODEL=jev-latest。
+4. 官方接口为POST /v1/systemone；当前requests适配器已存在，不需另装SDK。
+注意：完整研究入口显式关闭原框架自动逐帖Jev筛选，因为它原先16线程并发、自动重试且不经过主账本。配置Key只使其成为“已配置”，不自动开启费用；该筛选仍需接独立授权/账本后启用。基础社交公开采集不受影响。
+官方：https://docs.typesafe.ai/introduction/quickstart
+
+运行环境
+沿用tech_rag/integration/.venv/Scripts/python.exe；以下命令均从工作区根目录执行。
+不新建环境、不下载BGE、不改变知识库。没有启动/重启服务器或确认周期计划。
+
+检查配置（不联网）：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\source_config.py
+单次数据源探测（每个已配非LLM源一次HTTP，不自动重试）：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\source_config.py --probe --output tech_rag/state/us_sources_check.json
+
+完整十二角色研究
+integration/us_research.py复用原四类前置分析师及八类研究/风险/终审角色。
+股票可为通用美股代码；B组仅在现有MU/TSM/NVDA知识库覆盖时获得RAG指南，无覆盖时不套模板。
+独立入口，不替换旧新闻搜索、原问答或原九角色受控图。
+明确执行一次付费研究的CLI：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\us_research.py --ticker NVDA --output tech_rag/state/my_NVDA_full_run --confirm-paid
+输出目录不可复用；失败不自动重复运行。模型调用共享原Flash账本，逐请求审计、零SDK重试、未知用量停机；不会使用新账本绕过旧限制。
+真实历史日期拒绝用当前工具回填；模型自由报告只标为needs_review，不能当已验证财务事实或直接下单。
+本次只做完整图离线/合成执行测试，不声称已付费跑完全部十二Agent。
+
+记忆回流
+SQLite：state/us_research/memory.sqlite3。原TradingAgents交易评级日志不删除、不改写。
+完整研究和单次prompt-research成功后保存原始结论；后续复核追加版本，不覆盖初判。
+只有公开时间、系统获取时间、复核时间和记录时间允许的记录才会进入之后同股票/同实验域/同组研究。
+记忆是待验证经验，不是新闻来源、供应链关系或确定收益；模型不会因过去价格上涨就学成“论点已证实”。
+行情后续复核按首次分析纽约日期之后的首个交易日收盘为起点，配置的1/5交易日为研究观察窗，不是推荐持仓期。
+复核获取Yahoo复权日线并与SPY比较；没有有效价格则保留pending，窗口未结束不提前结算。
+调用一次后续复核（真实网络，无LLM）：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\research_memory.py settle
+查看当前可回流经验：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\research_memory.py context --ticker NVDA
+业务事实后续复核：准备JSON，含memory_id、checked_at、observations列表（url、published_at、acquired_at）、lesson；执行review --file 路径。
+自动行情观察与有来源的业务复核分开保存；没有把循环常驻或付费任务自动启用。下一次研究读取既有复核记录，复核命令可由用户确认后的宿主调度器调用。
+
+本次真实回流检查
+将原10月22日四组终审结论保存到独立实验域AB_20261022_saved_review，不混入production。
+实际获取行情，完成4条1交易日观察，4条5交易日观察尚未到期；错误0、模型调用0。
+再次运行新增观察0、重复provider调用0；当前四组均可读到各自经验；10月22日历史查询读不到10月27日记录。
+证据：state/us_restore_20261027/memory_live_check.json、memory_loop_audit.json。
+
+A/B结论评测
+evaluation/run_us_ab.py：相同股票、冻结时钟、原始模型/工具设置，A不传RAG、B传公司指南；两组获得独立深拷贝的同一初始记忆，实验结果不写production。
+预检（不调用模型）：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\evaluation\run_us_ab.py --prepare-only --tickers NVDA MU --output tech_rag/state/my_ab_prepare
+明确执行一批真实A/B时使用同命令去掉--prepare-only、添加--confirm-paid；输出目录需新建。
+重要：现有Flash账本剩26请求，而两公司四组完整图至少48次、按4轮工具上限最多112次；当前默认批次在取数/付费前被预检阻止。本次没有擅自放宽旧请求/次数限制，也没有支付半套必然无法完成的实验。
+统计目标是最终结论、条件性传导、事前预期、反证与未知项。默认winner=not_determined，不按新闻候选数或模型自评分数判胜。
+审查旧真实终审结果（0模型调用）：
+tech_rag\integration\.venv\Scripts\python.exe tech_rag\evaluation\conclusion_eval.py --saved tech_rag/state/prompt_conclusion_ab_unlimited_20261022 --output tech_rag/state/old_conclusion_audit.json
+严格历史回放：--replay manifest.json --output result.json；manifest含cells，每格ticker/analysis_time/A/B/evidence/memory_A/memory_B，可另含outcome与prior_expectations。
+evidence要求version_id、published_at、acquired_at；事前预期另需first_disclosed_at且公开时间严格早于首次披露。晚获取、无版本、A/B记忆不一致均拒绝。
+outcome仅按给定同一entry_date/exit_date的stock和benchmark起止价格计算观察值，不虚构持仓/成交/收益策略。没有可检验的预注册方向判断，不输出胜率/PnL。
+这是已有结论的审计回放，不冒称重新生成了历史模型判断。要做模型历史重跑，还需完整历史工具快照适配与数据档案。
+本次旧真实样本均被正确拒绝为历史回测样本：采集时间晚于冻结判断，合格历史样本数0。
+
+后端新增接口（仍需正常加载新版服务）
+POST /api/monitor/full-research：ticker、arm、paid_confirmed、memory_enabled。
+GET /api/monitor/memory：ticker、arm、namespace、as_of。
+POST /api/monitor/memory-review：memory_id、checked_at、observations、lesson。
+POST /api/monitor/memory-settle：namespace；按需执行一次，无LLM。
+继承现有本机Host/Origin及CSRF保护。没有新增前端按钮或假称服务已加载。
+
+尚未完成的真实依赖/验收
+- Alpha额度/权限提示仍需账户侧核查。
+- Jev隐式付费已禁用，独立预算接入尚未实现。
+- 严格历史新闻/一致预期/社交快照没有接入；历史模型重跑与盲评不能声称完成。
+- 仍需完整十二角色的真实付费验收及研究可靠性审查；旧原生联网未知账本未被重置。
+- 本次没有新增长期定时调用或通知通道。

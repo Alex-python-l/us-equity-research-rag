@@ -1,0 +1,163 @@
+diff --git a/tradingagents/graph/setup.py b/tradingagents/graph/setup.py
+index 7cb53be..ce5a7ed 100644
+--- a/tradingagents/graph/setup.py
++++ b/tradingagents/graph/setup.py
+@@ -1,5 +1,6 @@
+ import logging
+ from collections import Counter
++from dataclasses import replace
+ from typing import Any, TypedDict
+ 
+ from langchain_core.messages import HumanMessage
+@@ -50,7 +51,7 @@ def _tools_or_done(state) -> str:
+     return "tools" if state["messages"][-1].tool_calls else END
+ 
+ 
+-def _analyst_graph(spec, agent, max_tool_rounds: int):
++def _analyst_graph(spec, agent, max_tool_rounds: int, extension=None):
+     """One analyst as a graph of its own: the model and its tools, on a private message history.
+ 
+     It returns only its report, so analysts running side by side never write the
+@@ -59,8 +60,8 @@ def _analyst_graph(spec, agent, max_tool_rounds: int):
+     that turn ends it whatever it answers, so a model that keeps calling tools
+     cannot run the graph into its recursion limit (#1420).
+     """
+-    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str})
+-    graph = StateGraph(AgentState, output_schema=output)
++    output = TypedDict(f"{spec.key.capitalize()}Report", {spec.report_key: str, **(extension.output_fields if extension else {})})
++    graph = StateGraph(extension.state_schema if extension else AgentState, output_schema=output)
+     graph.add_node("agent", agent)
+     graph.add_edge(START, "agent")
+     if not spec.tools:
+@@ -99,12 +100,14 @@ class GraphSetup:
+         deep_thinking_llm: Any,
+         conditional_logic: ConditionalLogic,
+         max_tool_rounds: int,
++        evidence_extension=None,
+     ):
+         """Initialize with required components."""
+         self.quick_thinking_llm = quick_thinking_llm
+         self.deep_thinking_llm = deep_thinking_llm
+         self.conditional_logic = conditional_logic
+         self.max_tool_rounds = max_tool_rounds
++        self.evidence_extension = evidence_extension
+ 
+     def setup_graph(
+         self, selected_analysts=("market", "social", "news", "fundamentals"), memory_node=None
+@@ -121,29 +124,36 @@ class GraphSetup:
+                 ``past_context``. It runs alongside the analysts.
+         """
+         plan = build_analyst_execution_plan(selected_analysts)
++        extension = self.evidence_extension
++        def model(role, default):
++            return extension.model_for(role, default) if extension else default
++        def wrap(role, node):
++            return extension.wrap_node(role, node) if extension else node
+ 
+         analyst_factories = {
+             "market": lambda: create_market_analyst(self.quick_thinking_llm),
+             "social": lambda: create_sentiment_analyst(self.quick_thinking_llm),
+-            "news": lambda: create_news_analyst(self.quick_thinking_llm),
++            "news": lambda: create_news_analyst(model('news', self.quick_thinking_llm)),
+             "fundamentals": lambda: create_fundamentals_analyst(self.quick_thinking_llm),
+         }
+ 
+-        bull_researcher_node = create_bull_researcher(self.quick_thinking_llm)
+-        bear_researcher_node = create_bear_researcher(self.quick_thinking_llm)
+-        research_manager_node = create_research_manager(self.deep_thinking_llm)
+-        trader_node = create_trader(self.quick_thinking_llm)
++        bull_researcher_node = wrap('bull', create_bull_researcher(model('bull', self.quick_thinking_llm)))
++        bear_researcher_node = wrap('bear', create_bear_researcher(model('bear', self.quick_thinking_llm)))
++        research_manager_node = wrap('research_manager', create_research_manager(model('research_manager', self.deep_thinking_llm)))
++        trader_node = wrap('trader', create_trader(model('trader', self.quick_thinking_llm)))
+ 
+-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
+-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
+-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
+-        portfolio_manager_node = create_portfolio_manager(self.deep_thinking_llm)
++        aggressive_analyst = wrap('aggressive', create_aggressive_debator(model('aggressive', self.quick_thinking_llm)))
++        neutral_analyst = wrap('neutral', create_neutral_debator(model('neutral', self.quick_thinking_llm)))
++        conservative_analyst = wrap('conservative', create_conservative_debator(model('conservative', self.quick_thinking_llm)))
++        portfolio_manager_node = wrap('portfolio_manager', create_portfolio_manager(model('portfolio_manager', self.deep_thinking_llm)))
+ 
+-        workflow = StateGraph(AgentState)
++        workflow = StateGraph(extension.state_schema if extension else AgentState)
+ 
+         for spec in plan.specs:
++            if extension:
++                spec = replace(spec, tools=tuple(extension.tools_for(spec.key)))
+             workflow.add_node(spec.agent_node,
+-                              _analyst_graph(spec, analyst_factories[spec.key](), self.max_tool_rounds))
++                              _analyst_graph(spec, wrap(spec.key, analyst_factories[spec.key]()), self.max_tool_rounds, extension))
+ 
+         workflow.add_node("Bull Researcher", bull_researcher_node)
+         workflow.add_node("Bear Researcher", bear_researcher_node)
+@@ -161,8 +171,11 @@ class GraphSetup:
+         if memory_node is not None:
+             workflow.add_node("Memory Log", memory_node)
+             first_steps.append("Memory Log")
++        if extension:
++            workflow.add_node('Evidence Intake', extension.intake)
++            workflow.add_edge(START, 'Evidence Intake')
+         for node in first_steps:
+-            workflow.add_edge(START, node)
++            workflow.add_edge('Evidence Intake' if extension else START, node)
+         workflow.add_edge(first_steps, "Bull Researcher")
+ 
+         # Both research-debate edges share the complete DEBATE_PATH_MAP (#1088).
+@@ -182,6 +195,11 @@ class GraphSetup:
+                 RISK_ANALYSIS_PATH_MAP,
+             )
+ 
+-        workflow.add_edge("Portfolio Manager", END)
++        if extension:
++            workflow.add_node('Final Evidence Gate', extension.final_gate)
++            workflow.add_edge('Portfolio Manager', 'Final Evidence Gate')
++            workflow.add_edge('Final Evidence Gate', END)
++        else:
++            workflow.add_edge("Portfolio Manager", END)
+ 
+         return workflow
+diff --git a/tradingagents/graph/trading_graph.py b/tradingagents/graph/trading_graph.py
+index a265ff8..5355efe 100644
+--- a/tradingagents/graph/trading_graph.py
++++ b/tradingagents/graph/trading_graph.py
+@@ -57,6 +57,8 @@ class TradingAgentsGraph:
+         debug=False,
+         config: dict[str, Any] = None,
+         callbacks: list | None = None,
++        model_bundle: dict | None = None,
++        evidence_extension: Any = None,
+     ):
+         """Initialize the trading agents graph and components.
+ 
+@@ -76,8 +78,10 @@ class TradingAgentsGraph:
+         os.makedirs(self.config["results_dir"], exist_ok=True)
+ 
+         extra = {"callbacks": self.callbacks} if self.callbacks else {}
+-        self.deep_thinking_llm = create_tier_client(self.config, "deep", **extra).get_llm()
+-        self.quick_thinking_llm = create_tier_client(self.config, "quick", **extra).get_llm()
++        self.deep_thinking_llm = (model_bundle['deep'] if model_bundle else
++                                 create_tier_client(self.config, "deep", **extra).get_llm())
++        self.quick_thinking_llm = (model_bundle['quick'] if model_bundle else
++                                  create_tier_client(self.config, "quick", **extra).get_llm())
+ 
+         self.memory_log = TradingMemoryLog(self.config)
+ 
+@@ -98,6 +102,7 @@ class TradingAgentsGraph:
+             self.deep_thinking_llm,
+             self.conditional_logic,
+             max_tool_rounds,
++            evidence_extension=evidence_extension,
+         )
+ 
+         self.propagator = Propagator(
+@@ -109,7 +114,7 @@ class TradingAgentsGraph:
+         self.selected_analysts = tuple(selected_analysts)
+ 
+         # Set up the graph: keep the workflow for recompilation with a checkpointer.
+-        self.workflow = self.graph_setup.setup_graph(selected_analysts, memory_node=self._memory_step)
++        self.workflow = self.graph_setup.setup_graph(selected_analysts, memory_node=None if evidence_extension else self._memory_step)
+         self.graph = self.workflow.compile()
+         self._checkpointer_ctx = None
+         self._resuming = False

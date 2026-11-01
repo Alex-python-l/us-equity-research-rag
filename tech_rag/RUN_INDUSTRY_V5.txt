@@ -1,0 +1,63 @@
+RAG前置产业链新闻研究 v5｜运行与安全续接
+
+从项目根目录运行；复用已有环境，无安装/模型下载/全量embedding。
+解释器：tech_rag\integration\.venv\Scripts\python.exe
+Neo4j只读配置tech_rag/.env，LLM仅根目录apikey.env；不要打印任何凭据。
+正常入口integration.framework.run_research已切换v5，默认brief两角色。旧流程仅run_archived_research_v3供旧报告回放，不作为生产默认。
+
+不付费CLI（真实本地RAG与任务生成；模型输出明确是替身，不是研究质量结果）：
+  & tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\run.py --ticker MU --question 'HBM供给变化如何影响美光？' --as-of current --backend local --model-mode controlled --no-dense --output tech_rag\output\industry_new_smoke.json
+输出路径必须新建，已有result拒绝重复提交。--no-dense是本轮诊断配置；不加此参数则复用现有BGE-M3审核文本向量与查询缓存，没有新增文档embedding。--fetch-news才在controlled模式实际进行通用Yahoo搜索/获取正文。
+--workflow brief默认，显式multiagent保留官方多角色接线；本轮只有替身9角色验证，线上真实效果仅两个角色。
+--backend neo4j只连接指定Finance；失败直接报错，不退回local。本轮Finance不可达，待用户自行使已指定实例在线，无需重新确认目标，不擅自启动或重启。
+
+Python正式接口示例（模型替身、无网络新闻，不会付费）：
+  import sys
+  sys.path.insert(0, 'tech_rag')
+  from integration.framework import run_research
+  result = run_research('MU', 'HBM供给变化如何影响美光？', 'current',
+      model_mode='controlled', backend='local', use_dense=False,
+      archive_dir='tech_rag/output/industry_unique_run')
+  # result可JSON序列化，prepared含IndustryContext/SearchTasks/正文版本/未知/预算。
+  # reviewed_output只有审核事实/条件机制；model_gap_notes_unverified不是事实。
+  # 没有数据库写入、市场/交易工具权限。
+
+单独前置背景：
+  from integration.industry_context import build_industry_context, plan_search_tasks
+  bg = build_industry_context('NVDA', '数据中心电力与液冷约束', 'current',
+      {'use_dense':False}, backend='local')
+  tasks = plan_search_tasks('NVDA', '数据中心电力与液冷约束', bg['analysis_time'], bg, max_queries=2)
+业务主体与证券通过固定别名区分，MU/美光、TSM/台积电、NVDA/英伟达；TSM ADS不同于台股2330。
+
+新闻来源接口
+- 默认可独立执行search_yahoo，真实用yfinance.Search通用query，不是Ticker。此次6长查询0候选，覆盖能力未证明充分。
+- 有宿主web能力时注入search_provider(task,as_of,historical=False,max_results=3,cache_dir=...)。返回可追溯候选，只是线索；仍由正文工具核验。不得用普通LLM API声称联网。
+- 本轮实际宿主搜索已存档，SnapshotSearchProvider(directory)只允许完全一致query/hash/冻结时点/窗口，绝不假称执行新搜索。实时新run不能拿旧快照替代。CachedArticleProvider(cache_json)校验原始SHA/正文/坐标并复用成功及失败；SourceAwareSnapshotProvider冻结可访问性筛选，不让先执行的臂改变后执行臂条件。
+- 新闻后可以read_news_source(prepared,citation_id)读已冻结原段，不再触发公司RAG。修订/正文未覆盖关系作为缺口，不由相似度认定供应关系。
+- 字幕/标题/摘要非正文；正文失败即线索。默认不读PDF新闻，noarchive保留限制是当前保守工程策略。不能绕过付费墙。整篇HTML保存不等于所有段落进入模型。
+
+预算与时间
+每run最多2查询、每查询3结果、2正文尝试；正文18k字符，选入模型完整新闻段落合计6k、背景完整关系与证据7k、实际messages硬上限24k，输出1800 tokens。必要父finding/条件/未知放不下则停，不扩大B预算或静默裁句。
+共用来源元数据、表格和shared_text可无损还原；紧张时引用ID前缀/版本码可逆编码，unpack_context还原完整标识。未送达段落列表本地完整保存，模型可收省略计数与SHA；没有拿省略的证据当已送达。
+current冻结一个本轮时点，各工具复用。带时区历史时点不启用实时新闻；网页当前快照不能假称历史版本。日级可见发布日期的UTC区间与actual_public_at=null都必须保留，published_at的可用上界不是精确公开时间。
+新闻为空时正式online入口在初始化provider前停止，0模型调用；输出origin为host，不伪装真实模型判断。
+
+复核已有结果：全部离线，不重新调用模型、搜索或正文
+  & tech_rag\integration\.venv\Scripts\python.exe tech_rag\industry_v5_20261019\grade_and_package.py
+  & tech_rag\integration\.venv\Scripts\python.exe tech_rag\industry_v5_20261019\score_source_atoms.py
+  & tech_rag\integration\.venv\Scripts\python.exe tech_rag\industry_v5_20261019\package_tables.py
+评分为选定原子/来源辅助非专家评审，76行不代表所有自由文字穷尽准确率。原文件不覆盖，只更新独立evaluation派生文件；全部原模型/provider响应和失败仍保留。
+
+回归：先指定工作区临时目录，避免Windows沙箱默认TEMP权限错误。
+  $env:PYTHONIOENCODING='utf-8'
+  $env:TEMP=(Join-Path (Get-Location) 'tech_rag\state\test_tmp')
+  $env:TMP=$env:TEMP
+  & tech_rag\integration\.venv\Scripts\python.exe -m unittest discover -s tech_rag\tests -v
+最新256项通过。测试包含旧归档流程回归，日志出现旧search_news/company_research并不代表正式入口仍用旧流程。
+
+禁止重复本轮在线driver
+24请求/113879 tokens已结束，两个权威账本：industry_v5_20261019/online/budget.json及primary_followup_AB/budget.json。
+不要再次执行run_experiment.py --online、run_primary_followup.py --online、repair_context_only.py --online；不要换目录重置预算，亦不要重新搜同批24查询或重复GET正文。repair脚本会因总请求已24而拒绝重提。
+将来新的online研究需要独立新批次及明确预算；此文不授权在本轮继续付费。--model-mode online --llm-config apikey.env为接口能力，不能本轮再次运行来“补漂亮结果”。
+
+状态导航：RESULTS_V5_20261019.txt、industry_v5_20261019/DELIVERY_MANIFEST.json与根目录下次从这里继续.txt。保留旧v2/v3/v4和原油；本轮无新图事实/索引重建，无LEAN/券商/订单/远程操作。

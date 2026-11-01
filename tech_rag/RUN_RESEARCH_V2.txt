@@ -1,0 +1,114 @@
+科技产业链统一研究入口 v2｜运行说明（2026-10-18）
+
+用途与边界
+给下游研究Agent返回受时间约束、有类型路径和精确原文引用的EvidencePacket。
+不生成或执行交易策略，不安装TradingAgents/LEAN，不连接券商，不修改远程服务器。
+规则式Agent会实际调用统一工具；llm_generation_executed=false。不需要LLM凭据。
+原油目录、原油索引、化工代码均独立保留。不要启动全量文档embedding或重复下载BGE-M3。
+
+准备
+在工作区根目录使用现有 financial_rag/.venv；PowerShell：
+  $env:PYTHONIOENCODING='utf-8'
+Finance需在Desktop由用户启动。连接只从显式tech_rag/.env读取；不自动切库，不控制服务。
+已指定的Finance ID:164b5ace-03b4-45cd-bc0f-ac9c533d6ef4；database=neo4j。
+先只读核验（不打印密码）：
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py --config tech_rag\.env probe
+
+统一CLI
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py --out tech_rag\output\research_MU_demo.json research 美光 'HBM供应受限如何影响下游？' --as-of current
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py --backend neo4j --config tech_rag\.env --out tech_rag\output\research_TSM_demo.json research TSM '先进封装产能变化的条件和证据' --as-of current
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py research NVDA '具名内存和晶圆供应伙伴' --as-of '2025-03-01T00:00:00+00:00'
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py research MU '9650 SSD顺序读取吞吐' --as-of current --no-dense
+预算用 --budget 后接JSON（PowerShell建议使用单引号包住JSON；也可直接调用Python）。
+下一页保持公司、问题、as-of、budget完全相同，增加 --cursor '上页pagination.next_cursor'。
+游标绑定冻结时刻、时间模式、查询、预算和允许语料指纹；数据或参数变化会拒绝复用。
+current分页冻结首个请求时刻；显式ISO必须有时区，进入strict_historical。
+
+Python接口（保存为工作区脚本或在项目根目录运行）
+  import sys
+  from pathlib import Path
+  sys.path.insert(0,str(Path('tech_rag').resolve()))
+  from research import build_research_context, ResearchEngine
+  packet=build_research_context('MU','HBM供应约束及条件','current',
+      {'max_hops':2,'max_paths':20,'max_results':12,'max_total_chars':16000})
+  # JSON可序列化，后续包装为LangGraph/TradingAgents只读tool即可
+  import json
+  print(json.dumps(packet,ensure_ascii=False))
+  engine=ResearchEngine('neo4j','tech_rag/.env')
+  packet=engine.build('台积电','CoWoS-R pitch及中介层','current')
+一个ResearchEngine固定一份读取快照，适合一次有界会话；下一轮有数据更新时重建实例。
+便捷build_research_context在本地资料mtime变化时重建，Neo4j模式每次重新读取。没有数据库静默降级。
+Neo4j检索从真实目标读取TechAssertion/Evidence/Entity/Source、全部TechChunk以及真实向量，做内存时点筛选及有界遍历；不是仅凭连接成功宣称数据库检索已测。
+
+TradingAgents接口准备
+  from tradingagents_adapter import adapt_evidence_packet, research_tool
+  context=adapt_evidence_packet(packet)
+  # context['research_context']: 带引用研究文本
+  # context['evidence_packet']: 完整机器数据
+  # context['evidence_map']: citation_id -> 完整证据映射
+  context=research_tool('NVDA','主要业务及供应链','current',{'max_results':8})
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py --out tech_rag\output\tradingagents_context.json adapt NVDA '供应链与约束' --as-of current
+权限仅research_read_only。适配器没有任意Cypher入口、数据库写入或交易接口。
+
+Agent
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py agent MU '近期HBM供应受限及产品进展' --as-of current --session mu_v2 --max-rounds 3
+Python run_agent支持budget、engine、refresh_news参数；会话在state/agent.sqlite3的research_sessions_v2表。
+每轮检查时间和数据版本；缓存只复用原文再次验证有效的引用，不复用生成答案。当前切历史会重置不合格证据。
+工具记录包括inspect_existing_state/build_research_context/keyword_search/reviewed_dense_search/typed_graph_search/original_locator_verification。
+近期问题可另外调用independent_news_search；元数据只作候选，不会成为关系事实。
+达到轮次、页数、工具或正文预算/没有新引用时停止；检查stop_reason、coverage和next_cursor，不能把首屏当全集。
+
+索引、引用与时间规范
+1. 全部5,026块科技原文可关键词检索，独立SQLite文件state/tech_lexical_local.sqlite3或tech_lexical_neo4j.sqlite3。
+   .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py build-index
+   .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py keyword '美光 9650 28 GB/s' --as-of current
+   英文/型号/数字保留，中文二元词组+固定双语查询词典；词典不从未来文档学习。
+2. 每个截止时点先筛选available_at和historical_eligible，再创建该语料的内存FTS5 BM25；统计与排名均不依赖未来语料。
+   它不是全语料BM25排完再过滤；时点窗口采用小型LRU缓存，无全语料IDF泄漏。
+3. 向量只搜索已有152条审核卡片与证据；BGE-M3版本/CLS/L2/1024维与原索引一致。
+   一个进程只加载一次本机模型，查询向量按模型签名+问题存state/tech_query_vectors.sqlite3；不训练、不重算文档向量。
+4. 原文按chunk_id去重，关键词/余弦/图排名用确定性加权RRF(k=60)融合。原始分数、各通道排名和权重均保留。
+   分数仅表示检索相关性，不是事实可信度、因果概率或预期收益。
+5. 公司别名采用固定映射。MU/TSM/NVDA明确选择对应美国证券；中文公司名只解析业务实体，不隐式选择交易证券。
+   TSM为NYSE ADS；2330不是该证券，不进行静默等同。供应商/客户身份只来自审核断言。
+6. citation_id由source_id+原文件SHA256+物理页/段+实际返回字符范围确定。
+   字符坐标为原页/段空白折叠并strip后的Python Unicode偏移，[start,end)；PDF页码从1开始。
+   引用逐段回查原文件哈希、原文切片；表格口径/单位仍需结合table_policy和完整页，不能任意跨页拼数。
+   原文命中标raw_original_unreviewed_as_relation；与审核证据精确相交不表示整块通过关系审核。
+   evidence_map标明exact span是否fully_covered；断言只在全部证据已覆盖时进入assertion_map，路径引用该映射。
+7. 主体/客体是原断言方向；from/to是实际遍历方向，traversal_direction记录顺/逆。
+   paths为有序类型路径；claim/conditions/business_scope只在assertion_map存一份，避免正文重复。
+   original_disclosure/research_view/model_inference分开，不把可达性解释为真实采购或因果。
+8. max_hops/max_paths限制路径，max_expanded_entities限制扩展，max_results限制每页主要原文，context_radius最多2。
+   max_total_chars计唯一引用正文及唯一断言claim/conditions/business_scope，包含邻近上下文；不计JSON键、ID、审计元数据或输入问题。
+   完整JSON字节量会更大。适配器提供max_context_chars，默认等于正文预算，严格限制渲染文本并返回rendered/omitted引用及text_truncated；机器映射仍完整。
+   max_tool_calls计检索及独立新闻调用；原文定位核验是强制步骤，不会为省预算跳过。
+9. available_at为保守可用边界，报告期、published_date、SEC acceptance原值、actual_public_at分开保存。
+   未核验网页历史版本保守排除；研究观点/模型推断不可回填其创建时间之前。
+   actual_public_at有缺口，不声称严格盘中回测就绪。后续修订必须追加独立source_id并用revision_of/version_group串联，不能静默覆盖旧证据。
+10. conflicts仅检查同一三元组与业务范围的措辞差异，不具备完整语义矛盾检测能力；跨期变化要先核对分母/时期。
+    insufficient标明份额、匿名身份、确定收益等缺口。evidence_found仅表示有检索证据，不等于已综合回答或产业链完整。
+
+图谱连接
+新增TechEvidenceLocator/TechSourceVersion及TECH_REPRESENTS、TECH_LOCATED_AT、TECH_OVERLAPS_CHUNK、TECH_EVIDENCE_COVERS、TECH_IN_SOURCE_VERSION、TECH_VERSION_OF、TECH_FROM_SOURCE。
+所有节点/边限定dataset_id=tech_company_v1；只精确版本、页/段、字符交集匹配。不清空/重导原图。
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\neo4j_links.py --verify-only --config tech_rag\.env
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\cli.py --config tech_rag\.env sync-links
+日常查询不需要重复sync-links。执行前核验Finance服务端home及neo4j库；连接失败如实报错，不擅自重启。
+本轮图更新真实记录：output/graph_link_update_20261018.json；精确读回：output/graph_link_verify_20261018.json。
+
+验证
+先固定evaluation/questions_v2.json（24题/55原文锚点），SHA256=1aa12f9dc8f5f4be6c84831304c5e6a709515d67ee12fb1cf6a256bd9e5eecc2。
+问题来自独立原文标注，未据程序排名改标准；仍属自动标注，不冒充专家人工金标准。
+  $env:TEMP=(Resolve-Path 'tech_rag/state/test_tmp').Path
+  $env:TMP=$env:TEMP
+  .\financial_rag\.venv\Scripts\python.exe -m unittest discover -s tech_rag\tests -p 'test_*.py' -v
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\evaluate_research.py --backend local
+  .\financial_rag\.venv\Scripts\python.exe tech_rag\evaluate_research.py --backend neo4j --config tech_rag\.env
+不要并发启动多个评测进程，避免加载多份模型。历史未来追加测试不需要重新embedding。
+评测逐题JSON、CSV、汇总与失败都在output/evaluation_v2_*；关系方向/类型检查对照审核断言，不代表外部事实全正确。
+完整原文锚点召回与任意重叠分开统计；分页预算不足的失败不会删除。
+工程一致性与可回查通过，不证明产业链完备、策略有效或收益可交易。
+
+待后续阶段（本轮边界之外）
+TradingAgents实际安装/工具注册、LLM策略假设、固定信号规则、LEAN回测和模拟交易、券商接线；完整新闻正文系统、专家事实审核、盘中公开时间补核。

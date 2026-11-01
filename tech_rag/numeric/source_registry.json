@@ -1,0 +1,26 @@
+[
+  {
+    "ticker": "MU",
+    "source": "SEC companyfacts XBRL",
+    "url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0000723125.json",
+    "method": "HTTP GET with identified User-Agent, then filter accession, form, start/end, filed, units and frame; preserve original vintage",
+    "downloaded": false,
+    "rag_embedded": false
+  },
+  {
+    "ticker": "TSM",
+    "source": "SEC companyfacts XBRL",
+    "url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001046179.json",
+    "method": "HTTP GET with identified User-Agent, then filter accession, form, start/end, filed, units and frame; preserve original vintage",
+    "downloaded": false,
+    "rag_embedded": false
+  },
+  {
+    "ticker": "NVDA",
+    "source": "SEC companyfacts XBRL",
+    "url": "https://data.sec.gov/api/xbrl/companyfacts/CIK0001045810.json",
+    "method": "HTTP GET with identified User-Agent, then filter accession, form, start/end, filed, units and frame; preserve original vintage",
+    "downloaded": false,
+    "rag_embedded": false
+  }
+]

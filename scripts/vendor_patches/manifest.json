@@ -1,0 +1,9 @@
+{
+  "upstream_commit": "e8f5503e9b86d5c2710b0c76b1f686703968c9df",
+  "patches": [
+    {
+      "file": "evidence-extension.patch",
+      "sha256": "dcad3380cfbc9058456d09fcc14975252fbae2a950a87c78e4fee779bb4edd3b"
+    }
+  ]
+}

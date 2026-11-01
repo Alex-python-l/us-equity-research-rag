@@ -1,0 +1,53 @@
+Pro原生联网双路新闻 v6｜运行与续接
+
+先读RESULTS_V6_20261020.txt。当前真实首次native请求ConnectionError、usage未知，批次已停止；不要执行新的在线生成或重试driver。
+本轮改动已进入正式framework.run_research与integration/run.py，不是仅有评测脚手架。模型服务端执行web_search，没有项目外部搜索函数；公司直接新闻继续Yahoo。
+
+可安全运行的正式CLI smoke（模型替身，非质量）：
+  & tech_rag\integration\.venv\Scripts\python.exe tech_rag\integration\run.py --ticker MU --question 'HBM供给与认证如何影响美光？' --as-of current --backend local --model-mode controlled --news-mode native --no-dense --output tech_rag\output\native_contract_unique.json
+输出文件/审计目录必须新建，已有result拒绝重复提交。受控模式无主动原生/公司发现、不读取LLM配置；这里不足是host/替身输出，不是真实模型结论。
+auto：在线新运行选native；controlled默认保留legacy，显式native可测新接线。legacy：显式旧产业Yahoo/外部search snapshots对照。
+native拒绝--search-snapshots等外部search_provider；不要用宿主搜索快照冒充Pro原生。apikey.env仍只按授权路径读取，不修改或打印。
+
+Python接口（本轮仅示例，在线调用须待unknown核对及单独明确重试预算）：
+  import sys
+  sys.path.insert(0, 'tech_rag')
+  from integration.framework import run_research
+  result = run_research('TSM', 'CoWoS产能变化的条件性影响', 'current',
+      news_mode='native', model_mode='controlled', backend='local', use_dense=False,
+      archive_dir='tech_rag/output/native_contract_unique_python')
+返回可JSON序列化，schema沿用industry_research_v5兼容既有只读研究适配器，news_mode/native_discovery_usage/combined_provider_usage标识新路由及成本。
+正常online需要显式llm_config_path='apikey.env'，provider native角色固定Pro、分析角色用现有配置Flash；这是用户已授权的角色分配，不是失败换模型。
+kwargs不接受外部搜索provider，已冻结公司/native快照只能通过专门参数，且验证公司/时点/背景指纹；模型无任意数据库写入/交易权限。
+
+时间、证据、预算
+- 前置build_industry_context一次，双路共用冻结as_of。历史显式时点不调用实时Yahoo/native，当前页面不回填历史。
+- server-native必须有完成的web_search_call和可追溯结构化source URL/annotations。普通回答“已搜索”、query里出现网址、函数调用外部工具均不计成功。
+- 事件/日期/链接是候选，实际获取原文并核验发布/修订/版本/坐标后才能用于分析；二级媒体数字仍需归属原作者，不能当已验证官方事实。
+- 默认两路各最多3候选、总2正文尝试；失败和成功按URL缓存；背景/文档向量复用不全量embedding。单正文18k、实际messages24k、分析输出1800；必要父引用/条件/未知不剪。
+- 两路至少需要2 route slots；max_queries=1在网络前拒绝；收紧7日/1正文/1结果等预算会全程继承。
+- DeepSeek max_tool_calls被忽略，内部搜索只能提示与事后记录，不能作硬上限承诺。实际usage未知必须停止，不记0。
+- run_usage是分析角色，native_discovery_usage是额外发现，combined_provider_usage是总量；provider_tokens=null表示未知。CLI同样分别打印。
+
+复核本轮已完成部分（离线、无模型/搜索/正文网络）：
+  & tech_rag\integration\.venv\Scripts\python.exe tech_rag\native_news_v6_20261020\evaluate_available.py
+它输出可用性/成本停止状态、6本地包的296条替身上下文映射，不会生成假的A/B质量分。
+controlled/两角色流程仅契约测试；source_annotations.json是已取得共用公司新闻的有限锚点；没有完整真实A/B模型结果。
+
+回归（复用原integration/financial环境）：
+  $env:PYTHONIOENCODING='utf-8'
+  $env:TEMP=(Join-Path (Get-Location) 'tech_rag\state\test_tmp')
+  $env:TMP=$env:TEMP
+  & tech_rag\integration\.venv\Scripts\python.exe -m unittest discover -s tech_rag\tests -v
+275项已通过。旧归档流程测试日志仍可能出现旧search_news/company_research，正式入口已使用新路由，不混称。
+
+禁止本轮继续付费
+- native_news_v6_20261020/budget.json：1次尝试、usage_unknown=true、transport_failure_usage_unknown；known subtotal0不是实际0token。
+- experiment.py --discover MU不允许重复；--discover TSM/NVDA、--online也会被本轮unknown门禁拒绝。不要换目录/模型重置账本绕过停止。
+- /models和/user/balance只读200不构成重试依据。应先由提供方核实该次usage或用户明确授权承担未知计费风险的新重试，另存协议与成本；不得改本次账本为0。
+- 旧v5的24次/113879 tokens也不重提，与本轮1次未知请求分开。
+
+配置与外部状态
+Neo4j继续指定Finance/neo4j，仅tech_rag/.env；本轮TimeoutError，显式local，无服务重启/切库/写入。LLM仅apikey.env。
+无新环境/模型下载、无原油扩展/图事实写入、无LEAN/券商/订单/远程服务器操作。
+最新续接在根目录下次从这里继续.txt，交付manifest保留代码/数据/旧v5的SHA。
