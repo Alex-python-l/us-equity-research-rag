@@ -1,0 +1,102 @@
+金融 RAG 版本管理与增量维护｜2026-11-01
+
+仓库
+私有源码仓库 Alex-python-l/us-equity-research-rag。
+main 与 baseline-2026-11-01 保存改造前源码；改造在 feat/rag-validation-monitoring。
+仓库不包含原文、索引、向量、真实标注、运行账本、密钥或模型。
+新机器必须挂载自己的 tech_rag/raw、text、output 和必要 state；不要因源码克隆而重置费用账本。
+git clone --recurse-submodules 后，python scripts/restore_vendor.py 应用并验证固定上游补丁。
+源码依赖见根 requirements.txt；现有 integration/.venv 不需重建。
+
+RAG交付
+RAG只做一次逻辑检索/指南组装，不做正反讨论。原新闻讨论和十二角色保留。
+rag字段是本机可信注册表引用；完整后台包带来源、断言、条件、未知和内容哈希。
+新闻Agent只收到简短研究范围；原文审计单独保存。下游不回写rag，事件结果追加版本。
+已有未封存指南仍可审计，但新任务需要重新生成并确认冻结指南。
+knowledge_generation、retrieval_config_version 与每次结果一同保存。
+
+本地评测与人工审核
+Python指本项目 tech_rag/integration/.venv/Scripts/python.exe。
+生成草稿：
+  python tech_rag/evaluation/rag_benchmark.py --draft --output tech_rag/state/my_benchmark/draft.json
+准备打乱顺序的候选原文池（可选本地BGE，--no-dense不加载模型）：
+  python tech_rag/evaluation/rag_benchmark.py --pool --no-dense --input tech_rag/state/my_benchmark/draft.json --output tech_rag/state/my_benchmark/review.json
+
+本次已生成120题与候选原文池，位于 state/validation_20261101/benchmark_review.json；全部unreviewed。
+60开发/20验证/40封存，MU/NVDA/TSM各40。跨公司相同事实族放在同一集合，人工审核仍需排查其余语义泄漏。
+事实和充分证据由人补充：每题facts填fact_id、sources（source_id、source_sha256、pdf_page或paragraph、原始文本char_start/char_end、quote）。
+char坐标相对于text JSONL原块，不是已折叠空格的chunk。替代证据可在同一事实sources列举。
+qrels按chunk_id给grade=0/1/2/3（无关/背景/部分支持/直接充分）、fact_ids和duplicate_cluster。
+同一事实重复表述使用同一重复簇。所有返回片段未判完时不计算正式精度。
+同时填写answerability=answerable/conditional/insufficient、prohibited_inferences、reviewer、reviewed_at；人工完成后才置review_status=reviewed。
+人工应从原文寻找池外证据，不能仅以检索池作完整语料真值。未标注片段保持未知，不充当负例。
+约20%的错误前提/资料不足问题只是设计目标；最终可回答性以人工原文审核为准。
+
+运行开发消融：
+  python tech_rag/evaluation/rag_benchmark.py --input <本地审核文件> --output tech_rag/state/my_benchmark/ablation --split development --no-dense
+运行融合参数搜索，再对前三候选搜索多样性参数：追加 --grid，只允许开发/验证阶段。
+配置全部在retrieval_config.py显式版本化，默认系数暂保持原值；没有人工结果不能宣传参数更优。
+验证后在本地manifest填写baseline_config和frozen_config，封存集用 --split sealed_test --unseal-once。
+封存执行注册到全局本地SQLite，同一题集换目录也不能再次开启；不得通过删除注册表反复挑结果。
+每条结果保存最终包与候选排名、配置、语料指纹；报告召回、Evidence Precision、NDCG、MRR、重复事实和文本重叠。
+比较置信区间按事实族聚合，逐题保留新增与丢失事实；没有生成审核仍为未证明整体改善。
+answer_reviews按配置版本填写人工原子claim、引用supports_claim、遗漏、拒答与严重错误；一臂标签不得复制为另一臂分数。
+本驱动不主动调用付费模型。生成效果需固定模型/提示词后，另行明确实跑并盲审保存的实际答案，不能用检索分数替代。
+
+知识库维护
+打开监控页“知识库维护”，修改候选配置→保存草稿并预览→确认并启用。
+默认每美股交易日收盘后90分钟增量收集，每周日北京时间09:00完整检查；真实日历计算未来三次时间。
+首次回溯90天，之后按来源成功位置保留7天重叠；全局每轮60/每日120请求，无大模型调用。
+SEC按CIK/accession发现10-K/Q、8-K、20-F、6-K及修订；官方IR登记页面用于发现新披露和检测修订。
+有些官方页面可能拒绝自动访问或修改URL；失败以partial/failed呈现，不能冒充无新增。
+新原文归档版本化，新增块进入关键词索引；新关系只形成待审核共现候选，不自动晋升生产图。
+审核图和审核证据向量沿用已有版本，不能将新原文冒称已审核关系。
+每次构建都在staging中验证原文、文本坐标、引用闭包、关键词、向量顺序/维度及模型签名。
+校验通过才原子切换active.json；旧请求/分页持有旧快照，新请求使用新代。
+失败保持旧代；SQLite发布互斥在进程退出时自动释放，不需删除未知锁。
+文件完整性只能检测损坏，不能证明原始披露的经济结论。原目录中的未归档项单列缺口。
+Finance Neo4j没有自动同步新代，切换新代后使用local后端；Neo4j未验证时拒绝混合查询。
+
+调度与后台
+原草稿、预览、确认、暂停/恢复/结束继续使用。重复确认幂等，变更需重确认。
+请求在实际HTTP尝试前计数，预算耗尽延期，不继续60/120秒密集重试。
+每20秒续租；过期/暂停/旧配置的执行者不能继续外部请求或提交成功。
+正文与模型待处理阶段可恢复；已尝试但费用未知的模型请求不自动重发。
+无新增零大模型调用；相同正文的行情复核不再生成重复观察。
+关机/休眠错过的轮次合并为一次增量补查，不逐条补跑。不同主题保留独立水位。
+月度/季度汇总只整理对应窗口已保存事件，不宣称已完成完整基本面研究。
+
+Windows登录后台（以当前用户、普通权限运行，不需要密码）：
+  powershell -NoProfile -File scripts/windows_background.ps1 -Action Install
+  powershell -NoProfile -File scripts/windows_background.ps1 -Action Start
+  powershell -NoProfile -File scripts/windows_background.ps1 -Action Status
+后台只启动后端；只有在界面确认的计划才执行。Remove只移除登录启动登记，不删除研究数据。
+已有服务占端口时不杀进程、不静默复用旧版。关闭网页继续；注销、关机或休眠期间停止。
+
+事件：首发/基线/日线
+GET /api/monitor/event-evidence/candidates?event_id=... 查找已有原文中的指引候选。
+POST /api/monitor/event-evidence 保存人工核实版本；界面提供JSON输入，后端检查版本、引句、URL与原始公开/获取时钟。
+提交包含reviewed_by、ticker、first_public_at、event_facts、baselines，以及可比指标字段。
+event_facts和baselines每项填version_id、url、quote、published_at、acquired_at，必须对应后台真实归档。
+对知识库来源，version_id使用source_id；对已采新闻使用body version_id。页面上“基线候选”可查具体引用。
+first_public_at须与所审原始来源的发布时间一致，仅记reviewed_earliest_known；不是最早全球首发的自动证明。
+可比字段：ticker、metric、fiscal_period、business_scope、unit、currency、accounting_basis、value_kind。
+value_kind表示可比较业务口径（如recognized_revenue），不能把订单意向、规划和实收收入混算。
+基线另填baseline_kind=issuer_guidance或named_forecast、forecaster、value或low/high；正文需支持该预测。
+原预测撤回用新版本withdrawn=true；不能继续使用同主体的过期预测。
+本版没有历史市场一致预期服务，公司指引/具名预测不得改名为市场一致预期。
+首次首发未知、期间/货币/GAAP口径不匹配、版本/公开/获取时间不合格，一律unknown。
+novelty_review可填写status=new_fact/no_new_fact/unknown、reason、prior_version_ids；旧事件分类必须有早期归档版本。
+
+日线：盘前/盘中披露的当日为T0；收盘时以后或休市披露以下个交易日为T0。
+窗口起点是披露前最近收盘，终点为T0、T+1、T+5收盘。盘中事件当日日线混有披露前交易，明确标识。
+仅接纳已完成的交易日线；未到期window_incomplete，缺失数据null，不填补假日/停牌日。
+收益使用来源标注的调整后收盘价；相对SPY同起止日，量比相对事件前20个真实交易日。
+缺基准只使相对收益未知；拆股附近原始量比保守未知。保存数据源、快照、获取时点和观察窗口。
+priced_in与causal_attribution始终unknown，不输出已消化百分比；日线变化不证明新闻是原因。
+事件判断及复核追加新版本；研究记忆仅为经验，不能变成事实或事前预期。
+
+测试
+源码CI：python scripts/run_offline_tests.py，禁止socket连接，不依赖知识库或密钥。
+本机完整回归：python -m unittest discover -s tech_rag/tests。
+GitHub Actions运行Windows/Linux源码专题测试；模型、数据源网络与人工效果验收单独记录。

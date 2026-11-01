@@ -3,7 +3,7 @@ from pathlib import Path
 from collections import Counter
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from retrieval_config import RetrievalConfig
-from evaluation.rag_benchmark import draft_benchmark,validate_labels,metrics,paired_interval,fusion_grid
+from evaluation.rag_benchmark import draft_benchmark,validate_labels,metrics,paired_interval,fusion_grid,comparison_report
 
 class BenchmarkTests(unittest.TestCase):
     def test_drafts_are_not_gold_and_group_splits(self):
@@ -30,3 +30,16 @@ class BenchmarkTests(unittest.TestCase):
     def test_intervals_are_paired(self):
         self.assertGreater(paired_interval([0,0],[1,1])['lower'],0)
         self.assertEqual(paired_interval([1,1],[1,1])['upper'],0)
+
+    def test_answer_labels_are_specific_to_each_configuration(self):
+        row=dict(review_status='reviewed',facts=[],qrels={},answer_review=dict(review_status='reviewed',claims=[dict(status='supported')]))
+        self.assertNotIn('claim_support_rate',metrics(row,[]))
+        labelled=metrics(row,[],answer_review=dict(review_status='reviewed',claims=[dict(status='unsupported')],citations=[]))
+        self.assertEqual(labelled['claim_support_rate'],0)
+
+    def test_no_semantic_winner_without_answer_evidence(self):
+        manifest=dict(questions=[dict(id='q',fact_family='f')])
+        records=[dict(configuration='current',question_id='q',metrics=dict(formal=True,fact_recall=0,evidence_precision=1)),
+                 dict(configuration='B',question_id='q',metrics=dict(formal=True,fact_recall=1,evidence_precision=1))]
+        report=comparison_report(records,manifest)
+        self.assertEqual(report['comparisons']['B']['status'],'unproven')

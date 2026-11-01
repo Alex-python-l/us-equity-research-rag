@@ -24,7 +24,7 @@ class RetrievalConfig:
     @classmethod
     def from_value(cls, value=None):
         if isinstance(value, cls):
-            return value
+            value=asdict(value)
         data = dict(value or {})
         if set(data) - {f.name for f in fields(cls)}:
             raise ValueError('Unknown retrieval configuration')
