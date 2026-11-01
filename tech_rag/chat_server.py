@@ -35,9 +35,14 @@ def make_handler(chat,token,monitor=None):
                 except ValueError as exc:return self.send(400,{'error':str(exc),'error_type':'ValueError'})
                 except Exception as exc:return self.send(500,{'error':'监控状态读取失败。','error_type':type(exc).__name__})
             if path=='/api/health':
-                return self.send(200,dict(status='ready',application='financial-research-workspace',version='monitor-v1',rag_only=monitor is None,backend='local',core_companies=['MU','TSM','NVDA'],
-                    raw_chunks=sum(1 for _ in (ROOT/'output/chunks.jsonl').open(encoding='utf-8')),
-                    reviewed_vectors=sum(1 for _ in (ROOT/'output/embedded_records.jsonl').open(encoding='utf-8')),
+                from knowledge_versions import active_snapshot
+                snapshot=active_snapshot()
+                def count(name):
+                    try:
+                        with snapshot.file(name).open(encoding='utf-8') as f:return sum(1 for _ in f)
+                    except FileNotFoundError:return None
+                return self.send(200,dict(status='ready',application='financial-research-workspace',version='monitor-v2',rag_only=monitor is None,backend='local',core_companies=['MU','TSM','NVDA'],
+                    knowledge_generation=snapshot.generation,raw_chunks=count('chunks.jsonl'),reviewed_vectors=count('embedded_records.jsonl'),
                     news_enabled=bool(monitor and any(p['status']=='active' for p in monitor.store.list_plans())),
                     monitor_worker=monitor.runtime.worker_status() if monitor else None,
                     provider_config_present=(ROOT.parent/'apikey.env').is_file()))
@@ -83,7 +88,7 @@ def main():
     server.daemon_threads=True
     monitor.runtime.start()
     dump(ROOT/'state/rag_chat_server.json',dict(pid=os.getpid(),url=f'http://127.0.0.1:{args.port}',
-        local_only=True,news_enabled=False,application='financial-research-workspace',version='monitor-v1'))
+        local_only=True,news_enabled=False,application='financial-research-workspace',version='monitor-v2'))
     print(f'RAG chat ready: http://127.0.0.1:{args.port}',flush=True)
     try:server.serve_forever()
     finally:monitor.runtime.stop();server.server_close()

@@ -29,6 +29,18 @@ class RuntimeTests(unittest.TestCase):
         from monitor_runtime import MonitorRuntime
         return MonitorRuntime(Planner(),state_dir=td,**kwargs)
 
+    def test_unfinished_body_is_resumed_even_when_new_search_omits_it(self):
+        responses=[{'status':'candidates','items':[candidate()]},{'status':'no_candidates','items':[]}]
+        bodies=[{'eligible':False},{'eligible':True,'body_acquired':True,'body_text':'Synthetic original body','version_id':'recovered'}]
+        calls=[]
+        with tempfile.TemporaryDirectory() as td:
+            rt=self.runtime(td,search=lambda *a,**k:responses.pop(0),fetch=lambda *a,**k:bodies.pop(0),
+                            agent=lambda **k:calls.append(1) or {'findings':[]})
+            rt.execute(job(),now=NOW)
+            out=rt.execute({**job(),'run_id':'r2'},now='2026-10-22T15:31:00+00:00')
+            self.assertEqual(calls,[1]);self.assertEqual(len(rt.events()),1)
+            self.assertEqual(rt.events()[0]['original_version'],'recovered')
+
     def test_no_new_skips_model_and_second_identical_round_is_deduplicated(self):
         calls=[]
         def search(*a,**kw):return {'status':'candidates','items':[candidate()],'network_calls':1}
@@ -74,7 +86,7 @@ class RuntimeTests(unittest.TestCase):
             rt.execute(job(),now=NOW)
             rt.execute({**job(),'run_id':'r2'},now='2026-10-22T15:31:00+00:00')
             self.assertEqual(len(rt.events()),2)
-            self.assertEqual(rt.events()[-1]['judged_at'],NOW)
+            self.assertEqual(rt.events(as_of=NOW)[0]['judged_at'],NOW)
 
     def test_request_budget_stops_before_external_call(self):
         with tempfile.TemporaryDirectory() as td:
@@ -125,7 +137,8 @@ class RuntimeTests(unittest.TestCase):
             rt.market=lambda request,**k:seen.append(request['anchor']) or {'status':'unknown'}
             out=rt.execute({**job(),'kind':'event_followup','event_id':event['event_id']},now='2026-10-23T15:00:00+00:00')
             self.assertEqual(out['status'],'success')
-            self.assertEqual(seen,['2026-10-20T12:00:00+00:00'])
+            # A newly verified article timestamp does not prove earliest disclosure.
+            self.assertEqual(seen,[None])
             self.assertEqual(rt.events()[0]['original_version'],'v2')
             self.assertIsNone(rt.events(as_of=NOW)[0]['published_at'])
 

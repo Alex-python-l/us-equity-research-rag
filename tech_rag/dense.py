@@ -28,15 +28,17 @@ def query_vector(query,expected_signature):
    return vector,False
 
 class DenseRetriever:
- def __init__(self,backend='local',config=None):
+ def __init__(self,backend='local',config=None,*,snapshot=None):
+  from knowledge_versions import active_snapshot
+  self.snapshot=snapshot or active_snapshot()
   self.backend=backend
   if backend=='neo4j':
    from neo4j_store import read_vector_records
    self.records,self.matrix=read_vector_records(config)
   else:
-   self.records=readl(ROOT/'output/embedded_records.jsonl')
-   self.matrix=np.load(ROOT/'output/embeddings.npy',allow_pickle=False)
-  self.provenance=load(ROOT/'output/model_provenance.json')
+   self.records=readl(self.snapshot.file('embedded_records.jsonl'))
+   self.matrix=np.load(self.snapshot.file('embeddings.npy'),allow_pickle=False)
+  self.provenance=load(self.snapshot.file('model_provenance.json'))
   self.signature=sha(json.dumps(self.provenance,sort_keys=True))
   if self.matrix.shape!=(len(self.records),1024):raise RuntimeError('invalid reviewed-card matrix')
   if any(r['embedding_signature']!=self.signature for r in self.records):raise RuntimeError('index/model provenance mismatch')

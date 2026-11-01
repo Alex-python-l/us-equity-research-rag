@@ -17,7 +17,7 @@ _SEARCH_LOCK = threading.Lock()
 _SEARCH_SESSION = None
 
 
-def _fetch_yahoo(query, count, transport_limit=None):
+def _fetch_yahoo(query, count, transport_limit=None, before_request=None):
     import yfinance as yf
     from curl_cffi import requests as curl_requests
 
@@ -30,6 +30,8 @@ def _fetch_yahoo(query, count, transport_limit=None):
             ceiling = getattr(self, 'request_ceiling', None)
             if ceiling is not None and self.network_calls >= ceiling:
                 raise RuntimeError('Yahoo transport request limit')
+            callback=getattr(self,'before_request',None)
+            if callback:callback()
             self.network_calls += 1
             return super().get(*args, **kwargs)
 
@@ -39,6 +41,7 @@ def _fetch_yahoo(query, count, transport_limit=None):
         if _SEARCH_SESSION is None:
             _SEARCH_SESSION = ObservedSession()
         before = _SEARCH_SESSION.network_calls
+        _SEARCH_SESSION.before_request=before_request
         _SEARCH_SESSION.request_ceiling = before + transport_limit if transport_limit is not None else None
         try:
             result = yf.Search(query, max_results=0, news_count=count, lists_count=0,
@@ -53,6 +56,7 @@ def _fetch_yahoo(query, count, transport_limit=None):
                     "network_calls": _SEARCH_SESSION.network_calls - before}
         finally:
             _SEARCH_SESSION.request_ceiling = None
+            _SEARCH_SESSION.before_request = None
 
 
 def _window_stamp(value, *, end=False):
@@ -62,7 +66,7 @@ def _window_stamp(value, *, end=False):
 
 
 def search_yahoo(task: dict, as_of: str, *, historical=False, max_results=3,
-                 cache_dir: Path | None = None, transport_limit=None) -> dict:
+                 cache_dir: Path | None = None, transport_limit=None,before_request=None) -> dict:
     """Call ``yfinance.Search`` with the task's industry phrase, without a ticker.
 
     Yahoo relevance ranking is not a comprehensive time-filtered news archive.
@@ -108,7 +112,8 @@ def search_yahoo(task: dict, as_of: str, *, historical=False, max_results=3,
     else:
         result["calls"] = 1
         try:
-            fetched = (_fetch_yahoo(query, max_results, transport_limit=transport_limit)
+            fetched = (_fetch_yahoo(query,max_results,transport_limit=transport_limit,before_request=before_request) if before_request else
+                       _fetch_yahoo(query, max_results, transport_limit=transport_limit)
                        if transport_limit is not None else _fetch_yahoo(query, max_results))
         except Exception as exc:
             fetched = {"news": [], "network_calls": 0, "error_type": type(exc).__name__}

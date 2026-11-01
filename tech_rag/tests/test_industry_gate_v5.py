@@ -289,6 +289,8 @@ class FrozenSnapshotGateTests(unittest.TestCase):
                    'question': QUESTION, 'analysis_time': AT, 'historical': False,
                    'temporal_mode': 'current_as_collected', 'citation_map': {}, 'assertion_map': {},
                    'entity_map': {}, 'paths': [], 'unknowns': [], 'fingerprints': {'fixture': 'frozen'}}
+        from rag_package import freeze
+        context = freeze(context)
         with tempfile.TemporaryDirectory() as td, patch.object(pipeline, 'build_industry_context',
                 side_effect=AssertionError('A frozen background must not rebuild company RAG.')):
             try:

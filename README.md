@@ -21,3 +21,13 @@ The existing workstation uses `tech_rag/integration/.venv`; do not replace that 
 `baseline-2026-11-01` preserves the pre-change application. Development occurs on `feat/rag-validation-monitoring`, with separate commits for evaluation, frozen RAG handoff, knowledge maintenance, scheduling and event analysis.
 
 Before pushing, run `python scripts/repo_security.py`. Tests requiring knowledge, model caches or real providers run locally. CI uses synthetic fixtures and must never call a paid model.
+
+## Incremental research workflow
+
+The RAG handoff is generated once and stored in a trusted local content registry. Other research agents keep their original discussions and read the same frozen background. Event judgments and later observations are separate append-only versions.
+
+Knowledge maintenance uses official filings, staging generations, hash/coordinate checks and an atomic active pointer. New relationship candidates remain unreviewed; raw-document keyword indexing does not promote them to verified graph facts.
+
+Daily event observations use completed exchange sessions and the same SPY endpoints. Company guidance and named forecasts are compared only with matching pre-event versions. Market consensus, causal attribution and the degree priced in remain unknown when unsupported.
+
+See [the operating guide](tech_rag/RUN_RAG_VALIDATION.txt) for local benchmark review, source formats, API additions and Windows background startup. The 120-question candidate pool is local and awaits human review; no RAG effectiveness improvement is claimed from engineering tests.

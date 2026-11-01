@@ -70,6 +70,8 @@ def _matching_background(context, ticker, question, at, historical):
     expected_mode = 'strict_historical' if historical else 'current_as_collected'
     if context.get('temporal_mode') != expected_mode:
         raise ValueError('frozen background context temporal mode mismatch')
+    from rag_package import RagPackages
+    RagPackages().verify(context,context.get('rag'))
     return deepcopy(context)
 
 

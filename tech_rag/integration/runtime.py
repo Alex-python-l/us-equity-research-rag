@@ -57,7 +57,7 @@ class EvidenceRuntime:
         source=self.engine.tools.sources[c['source_id']]
         key='C_'+sha(json.dumps([c['source_id'],c['source_sha256'],c.get('pdf_page'),
                                c.get('paragraph'),c['char_start'],c['char_end']]))[:24]
-        return {'citation_id':key,**{k:c.get(k) for k in
+        return {'knowledge_generation':self.engine.snapshot.generation,'citation_id':key,**{k:c.get(k) for k in
                 ('chunk_id','source_id','source_sha256','source_url','report_period','available_at',
                  'historical_eligible','pdf_page','paragraph','char_start','char_end','text','section','table_policy')},
                 **{k:source.get(k) for k in ('published_at','actual_public_at','availability_basis')},

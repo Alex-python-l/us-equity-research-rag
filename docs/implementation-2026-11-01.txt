@@ -1,0 +1,73 @@
+金融RAG增量改造交付记录｜2026-11-01
+
+版本管理
+- 私有仓库：https://github.com/Alex-python-l/us-equity-research-rag
+- main保留基线；基线标签baseline-2026-11-01，提交4789e1e。
+- 功能分支feat/rag-validation-monitoring，按检索评测、冻结包、知识库维护、后台调度和事件分析分别提交。
+- 源码白名单上传，未上传本地凭据、私人联系邮箱、知识库、标注正文、向量、运行数据库、历史费用账本、虚拟环境和模型缓存。
+- TradingAgents固定上游e8f5503e9b86d5c2710b0c76b1f686703968c9df；两处原有补丁单独跟踪并提供幂等恢复脚本。
+
+实际修改
+1. 检索与评测
+   retrieval_config.py、retrieval_v3.py、research.py：权重、RRF、facet、多样性和通道开关配置化并有独立指纹，默认值保持原工程假设。
+   evaluation/rag_benchmark.py：120题预标、候选原文池、人工审核门禁、事实族切分、开发/验证/一次封存、通道消融和分阶段参数搜索。
+   输出Recall、Evidence Precision、NDCG、MRR、重复事实与文本重叠；人工答案审核按配置绑定，统计claim支持、错引、遗漏与拒答。
+   结果保存逐题回收/丢失事实与配对区间；没有人工审核不能输出RAG胜出。
+
+2. RAG一次交付
+   rag_package.py新增可信本地SQLite内容登记；内容全量哈希、股票和时钟校验，不信任调用方自报哈希。
+   industry_context/industry_pipeline、monitor_planner、us_research、prompt_web_research接入相同冻结引用。
+   完整证据留在后端，交付提示词保持简短；原新闻正反讨论和十二角色继续保留。
+   原文、关系、条件、未知及版本均进入冻结范围；事件观察和研究记忆另存追加版本。
+
+3. 知识库增量维护
+   knowledge_versions.py、knowledge_maintenance.py：SEC accession与官方IR资料发现、不可变原文对象、增量切块/关键词索引、共现待审核。
+   暂存校验、清单哈希、源坐标、向量维度/顺序/模型签名、SQLite发布互斥、原子活动指针、旧代保留及回退。
+   CompanyTools、ResearchEngine、DenseRetriever、scope_context、RAGChat及Planner按同一代读取；分页固定资料版本。
+   未同步Finance Neo4j时拒绝混合新代，避免旧图与新本地文件交叉使用。
+
+4. 后台运行与界面
+   monitor_store/runtime/api：续租、过期所有权校验、分阶段恢复、主题水位、逐HTTP尝试记账、预算耗尽延期、复核正文去重、月/季度事件窗口汇总。
+   独立知识库草稿、配置差异、预览未来三次、确认、暂停/恢复/结束、状态和运行记录接口。
+   chat_web/monitor.js提供知识库维护入口、可配置时间/请求额度、确认摘要、日线和不同预期基线展示、人工证据输入。
+   scripts/windows_background.ps1及run_background.py：当前用户登录后台启动、隐藏窗口、单实例、异常有限重启。
+   关机/休眠期间不执行；恢复后合并补查；不逐条补跑积压时隙。
+
+5. 事件核实
+   event_analysis.py新增人工审核的归档证据与基线记录、时间与指标可比性硬校验、撤回版本处理。
+   公司旧指引、具名预测、市场一致预期分别记录；后者未接数据时未知。
+   Yahoo真实日线适配：完成交易日、T0/+1/+5、SPY共同端点、事前20交易日量比、复权与快照获取时间。
+   首发未知、未完成窗口、缺基准、数据源失败、事后预期、货币/期间/口径错配都不伪造结论。
+   priced_in与causal_attribution保留unknown；日线变化不证明事件因果。
+
+新增接口（原接口保留）
+GET /api/monitor/knowledge/status
+POST /api/monitor/knowledge/preview /knowledge/confirm /knowledge/action /knowledge/audit
+GET /api/monitor/event-evidence /event-evidence/candidates
+POST /api/monitor/event-evidence
+所有本机POST继续校验Host、Origin和CSRF。
+
+验证记录
+- 本机完整回归403项通过，97.809秒；日志仅在本地state/validation_20261101/final_all_tests.log。
+- 随后等价UTC格式与追加版本校验专题7项通过；不将新增一项误称为已跑过完整404项。
+- 隔离的纯源码克隆中39项离线测试通过，未挂载知识库、密钥或子模块工作副本。
+- GitHub Actions Windows/Linux两个任务通过（437451f）：https://github.com/Alex-python-l/us-equity-research-rag/actions/runs/41286033126
+- CI首次失败真实暴露了provenance默认读取工作区文件和未安装HTML解析器的问题；已修复，不通过跳过测试掩盖。
+- JS语法检查、8项既有DOM交互及新增维护草稿/确认/修改失效交互通过；DOM测试不等同真实浏览器截图验收。
+- 已实际安装并启动US-Equity-Research-RAG登录任务；本机8876健康接口monitor-v2，worker在线、无错误。
+- 当前没有股票监控计划或知识库维护计划启用。后台在线不等于用户已确认持续采集。
+- 实际Yahoo源探测6次HTTP尝试，NVDA/SPY均返回7个日线，最新日期2026-10-30。只证明本次数据可取得，不证明事件因果或无前视回测。
+- 26份已归档原文哈希通过，5026块/152向量保留；另1个目录项未归档，仍列缺口。
+- 本次新增付费模型调用0。原Flash账本仍4请求/15782 tokens；原native账本仍16请求/473460已知tokens，旧未知用量标记保留。
+
+待完成的真实验收与依赖
+- 本地benchmark_review.json有120题、6382候选原文，全部待人工审核；尚无新的人工作答金标或可信效果提升结论。
+- 本次候选池没有启动BGE；实际调用配置若启用dense，应补入该配置返回的未审核候选再判分。
+- 持续计划需在本机界面预览并确认，才能运行；修改频率、范围或额度需再次确认。
+- 官方IR页面可变，遇反爬/链接变更返回失败或部分失败；SEC联系身份需保留本地配置。
+- 历史市场一致预期、盘中行情和完整历史新闻档案尚未接入；当前采用公开指引/具名预测和日线。
+- 原native联网入口继续受旧未知用量门禁限制；恢复源码功能不等于已解除费用异常或自动批准调用。
+- TypeSafe可选筛选仍未配置且未启用隐式付费；Alpha既有权限/额度提示不当作正常数据返回。
+- 十二角色有离线合成执行验收，本次未用付费模型跑新的完整真实研究。
+
+操作说明：tech_rag/RUN_RAG_VALIDATION.txt。

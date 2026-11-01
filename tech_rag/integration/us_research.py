@@ -121,7 +121,7 @@ def audited_model(directory,config_path=None):
     return Audited(client)
 
 def run_full_research(ticker,*,directory,paid_confirmed=False,as_of=None,arm='B',memory_enabled=True,
-                      memory_snapshot=None,memory_namespace='production',memory_arm=None,config_path=None):
+                      memory_snapshot=None,memory_namespace='production',memory_arm=None,config_path=None,event_analysis_versions=None):
     if paid_confirmed is not True:raise ValueError('Explicit one-shot paid confirmation required')
     at=utc(as_of or now());local_date=at.astimezone(ZoneInfo('America/New_York')).date()
     today=datetime.now(ZoneInfo('America/New_York')).date()
@@ -147,14 +147,22 @@ def run_full_research(ticker,*,directory,paid_confirmed=False,as_of=None,arm='B'
         from monitor_planner import MonitorPlanner
         try:guide=MonitorPlanner().guide(symbol)
         except ValueError:guide=None # unsupported knowledge, not an invented guide
+    if guide:
+        from rag_package import RagPackages
+        frozen=RagPackages().get(guide.get('rag'))
+        original=frozen['guide']
+        if {k:v for k,v in guide.items() if k!='rag'}!=original:raise ValueError('RAG guide changed after freezing')
     model=audited_model(folder,config_path)
     graph=build_full_graph(folder,model=model,memory_snapshot=snapshot)
     from tradingagents.dataflows.config import run_config
     state=graph.create_run_state(symbol,local_date.isoformat())
     state['instrument_context']+='\nResearch-only. Do not infer executable orders. Missing historical consensus means expectation gap unknown.'
     if guide:state['instrument_context']+='\nRAG search scope; relationships/events still require current verification:\n'+guide['agent_prompt']
+    event_versions=deepcopy(event_analysis_versions or [])
+    if event_versions:
+        state['instrument_context']+='\nBackend event observations (separate from frozen RAG; unknowns may not be upgraded by discussion):\n'+json.dumps(event_versions,ensure_ascii=False)
     dump(folder/'protocol.json',dict(ticker=symbol,arm=arm,analysis_time=at.isoformat(),memory_snapshot=snapshot,
-        guide_id=guide.get('guide_id') if guide else None,rag_status='ready' if guide else 'no_company_knowledge',
+        event_analysis_versions=event_versions,guide_id=guide.get('guide_id') if guide else None,rag=guide.get('rag') if guide else None,rag_status='ready' if guide else 'no_company_knowledge',
         historical_vintage_proven=False,execution_allowed=False,analysts=list(graph.selected_analysts)))
     try:
         with run_config(graph.config):raw=graph.graph.invoke(state,config={'recursion_limit':100})
@@ -163,12 +171,14 @@ def run_full_research(ticker,*,directory,paid_confirmed=False,as_of=None,arm='B'
         reports={k:raw.get(k) for k in ('market_report','sentiment_report','news_report','fundamentals_report',
             'investment_plan','trader_investment_plan','final_trade_decision')}
         final=dict(final_conclusion=reports.get('final_trade_decision') or '研究结论未完整返回',
-            expectation_gap='unknown: no point-in-time consensus provider',market_reaction='see_unverified_market_report',
+            expectation_gap='unknown: no point-in-time consensus provider',market_reaction='see_separate_backend_event_observations' if event_versions else 'unknown: no event-specific verified observation',
+            event_analysis_versions=event_versions,
             remaining_unknowns=['原始模型报告需要来源与事前预期审查；未通过研究真实性验收'],
             research_reliability='needs_review',execution_allowed=False)
+        final['rag']=guide.get('rag') if guide else None
         result=dict(status='completed_requires_review',run_id='US_'+uuid.uuid4().hex,ticker=symbol,arm=arm,
             analysis_time=at.isoformat(),completed_at=now(),final=final,reports=reports,
-            memory_snapshot=snapshot,execution_allowed=False,models_ran=True,market_vintage_verified=False)
+            memory_snapshot=snapshot,rag=guide.get('rag') if guide else None,execution_allowed=False,models_ran=True,market_vintage_verified=False)
         if memory_enabled:
             result['memory_id']=memory.record(result['run_id'],symbol,arm,result['analysis_time'],final,namespace=memory_namespace)
         dump(folder/'result.json',result);return result

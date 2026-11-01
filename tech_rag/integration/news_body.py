@@ -273,7 +273,7 @@ def _body_blocks(soup, facts, version, max_chars):
 
 
 def fetch_article(item: dict, as_of: str, *, historical=False, archive_dir: Path,
-                  max_chars=18000) -> dict:
+                  max_chars=18000,before_request=None) -> dict:
     """Fetch at most one public HTML page plus three explicitly checked redirects.
 
     ``eligible`` is for current collected evidence; ``as_of_eligible`` remains
@@ -330,6 +330,7 @@ def fetch_article(item: dict, as_of: str, *, historical=False, archive_dir: Path
                 session.trust_env = False
                 adapter = PinnedHTTPAdapter(host, address)
                 session.mount(urlsplit(url).scheme + "://", adapter)
+                if before_request:before_request()
                 result["calls"] += 1
                 result["real_network_executed"] = True
                 response = session.get(url, headers={"User-Agent": "TechRAGNewsResearch/5.0", "Accept": "text/html, application/xhtml+xml", "Host": urlsplit(url).netloc},

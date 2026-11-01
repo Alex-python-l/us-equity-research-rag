@@ -15,7 +15,7 @@ import uuid
 from common import ROOT, parse_time
 from lexical import eligible
 
-PLANNER_VERSION = 'monitor_planner_v4'
+PLANNER_VERSION = 'monitor_planner_v5_frozen'
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 CATEGORIES = [('upstream', '上游供给'), ('downstream', '下游需求'),
@@ -85,14 +85,18 @@ class MonitorPlanner:
     def __init__(self, state_dir=None, engine=None):
         self.state = Path(state_dir or ROOT/'state/news_monitor/planner').resolve()
         self._engine = engine
+        self._injected_engine = engine is not None
         with _LOCKS_GUARD:
             self.lock = _LOCKS.setdefault(str(self.state), threading.RLock())
 
     @property
     def engine(self):
-        if self._engine is None:
+        if getattr(self,'_pinned_engine',None) is not None:return self._pinned_engine
+        from knowledge_versions import active_snapshot
+        snapshot=active_snapshot()
+        if self._engine is None or (not self._injected_engine and self._engine.snapshot.generation!=snapshot.generation):
             from research import ResearchEngine
-            self._engine = ResearchEngine('local')
+            self._engine = ResearchEngine('local',snapshot=snapshot)
         return self._engine
 
     def _write(self, folder, identity, value):
@@ -117,7 +121,7 @@ class MonitorPlanner:
                     versions.append((source['source_id'], field, stat.st_size, stat.st_mtime_ns))
                 except OSError:
                     versions.append((source['source_id'], field, 'missing'))
-        return _sha([PLANNER_VERSION, engine.fingerprint(at, historical), sorted(versions)])
+        return _sha([PLANNER_VERSION, getattr(getattr(engine,'snapshot',None),'generation','legacy'),engine.fingerprint(at, historical), sorted(versions)])
 
     def _evidence(self, evidence_id, at, historical, verified):
         engine = self.engine
@@ -301,6 +305,12 @@ class MonitorPlanner:
         return '\n'.join(lines)
 
     def guide(self, ticker, as_of='current', refresh=False):
+        with self.lock:
+            self._pinned_engine=self.engine
+            try:return self._guide(ticker,as_of,refresh)
+            finally:self._pinned_engine=None
+
+    def _guide(self, ticker, as_of='current', refresh=False):
         ticker = _ticker(ticker)
         at, historical, time_key = _clock(as_of)
         if type(refresh) is not bool: raise ValueError('refresh must be boolean')
@@ -314,7 +324,12 @@ class MonitorPlanner:
                     versions.append(row['guide']['version'])
                 if row.get('cache_key') == key: previous.append(row)
             if previous and not refresh:
-                return deepcopy(max(previous, key=lambda row: row['guide']['version'])['guide'])
+                cached=max(previous, key=lambda row: row['guide']['version'])
+                if cached.get('rag'):
+                    from rag_package import RagPackages
+                    RagPackages().verify(cached,cached['rag'])
+                    return {**deepcopy(cached['guide']),'rag':deepcopy(cached['rag'])}
+                # Legacy guides remain readable, but a new delivery is registered below.
             relations, sources, rejected = self._relations(ticker, at, historical)
             topics = self._topics(ticker, relations, at)
             identity = 'MG_'+uuid.uuid4().hex
@@ -325,12 +340,15 @@ class MonitorPlanner:
                 status='ready' if relations else 'insufficient', analysis_time=at.isoformat(),
                 temporal_mode='strict_historical' if historical else 'current_as_collected',
                 model_requests=0, planner_version=PLANNER_VERSION)
-            self._write('guides', identity, dict(guide=guide, sources=sources, relations=relations,
+            record=dict(guide=guide, sources=sources, relations=relations,
                 rejected_relations=rejected, cache_key=key, requested_as_of=time_key,
                 analysis_time=at.isoformat(), historical=historical, knowledge_fingerprint=fingerprint,
                 evidence_ids=_unique(eid for r in relations for eid in r['evidence_ids']),
-                source_versions={s['source_id']:s['source_sha256'] for s in sources}))
-            return deepcopy(guide)
+                source_versions={s['source_id']:s['source_sha256'] for s in sources})
+            from rag_package import freeze as freeze_package
+            record=freeze_package(record)
+            self._write('guides', identity, record)
+            return {**deepcopy(guide),'rag':deepcopy(record['rag'])}
 
     def get_guide(self, guide_id):
         if not isinstance(guide_id, str) or not re.fullmatch(r'MG_[a-f0-9]{32}', guide_id):
@@ -339,6 +357,12 @@ class MonitorPlanner:
         if not path.is_file(): raise ValueError('guide not found')
         row = json.loads(path.read_text(encoding='utf-8'))
         if row.get('guide', {}).get('guide_id') != guide_id: raise ValueError('guide identity mismatch')
+        if row.get('rag'):
+            from rag_package import RagPackages
+            RagPackages().verify(row,row['rag'])
+            row['guide']={**row['guide'],'rag':deepcopy(row['rag'])}
+        else:
+            row['legacy_unsealed']=True
         return row
 
     @staticmethod
