@@ -128,7 +128,7 @@ def build_industry_context(ticker, question, as_of, budget=None, *, backend='loc
               'technical_cooperation':'技术合作', 'industry_dependency':'行业依赖'}
     unknowns += ['本次前置预算内未覆盖'+labels[key]+'的可回查审核关系；不代表不存在或未披露。'
                  for key in coverage['missing_background_sections']]
-    return dict(schema_version=SCHEMA, context_id='IC_'+_digest(stable)[:32],
+    result = dict(schema_version=SCHEMA, context_id='IC_'+_digest(stable)[:32],
         ticker=symbol, research_symbol=symbol, company=deepcopy(packet['company']), question=question,
         analysis_time=packet['analysis_time'], temporal_mode=packet['temporal_mode'],
         historical=packet['temporal_mode']=='strict_historical', backend=packet['backend'],
@@ -141,6 +141,8 @@ def build_industry_context(ticker, question, as_of, budget=None, *, backend='loc
         permissions=['research_read_only'],
         interpretation_policy='Original disclosures retain scope; technical cooperation, dependency, '
             'product design, inference and vector relevance do not establish procurement or causal returns.')
+    from rag_package import freeze as freeze_package
+    return freeze_package(result)
 
 
 # Topic vocabulary is an explanatory query router, not a company-answer table.

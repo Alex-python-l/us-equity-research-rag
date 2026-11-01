@@ -147,6 +147,11 @@ def run_full_research(ticker,*,directory,paid_confirmed=False,as_of=None,arm='B'
         from monitor_planner import MonitorPlanner
         try:guide=MonitorPlanner().guide(symbol)
         except ValueError:guide=None # unsupported knowledge, not an invented guide
+    if guide:
+        from rag_package import RagPackages
+        frozen=RagPackages().get(guide.get('rag'))
+        original=frozen['guide']
+        if {k:v for k,v in guide.items() if k!='rag'}!=original:raise ValueError('RAG guide changed after freezing')
     model=audited_model(folder,config_path)
     graph=build_full_graph(folder,model=model,memory_snapshot=snapshot)
     from tradingagents.dataflows.config import run_config
@@ -154,7 +159,7 @@ def run_full_research(ticker,*,directory,paid_confirmed=False,as_of=None,arm='B'
     state['instrument_context']+='\nResearch-only. Do not infer executable orders. Missing historical consensus means expectation gap unknown.'
     if guide:state['instrument_context']+='\nRAG search scope; relationships/events still require current verification:\n'+guide['agent_prompt']
     dump(folder/'protocol.json',dict(ticker=symbol,arm=arm,analysis_time=at.isoformat(),memory_snapshot=snapshot,
-        guide_id=guide.get('guide_id') if guide else None,rag_status='ready' if guide else 'no_company_knowledge',
+        guide_id=guide.get('guide_id') if guide else None,rag=guide.get('rag') if guide else None,rag_status='ready' if guide else 'no_company_knowledge',
         historical_vintage_proven=False,execution_allowed=False,analysts=list(graph.selected_analysts)))
     try:
         with run_config(graph.config):raw=graph.graph.invoke(state,config={'recursion_limit':100})
@@ -168,7 +173,7 @@ def run_full_research(ticker,*,directory,paid_confirmed=False,as_of=None,arm='B'
             research_reliability='needs_review',execution_allowed=False)
         result=dict(status='completed_requires_review',run_id='US_'+uuid.uuid4().hex,ticker=symbol,arm=arm,
             analysis_time=at.isoformat(),completed_at=now(),final=final,reports=reports,
-            memory_snapshot=snapshot,execution_allowed=False,models_ran=True,market_vintage_verified=False)
+            memory_snapshot=snapshot,rag=guide.get('rag') if guide else None,execution_allowed=False,models_ran=True,market_vintage_verified=False)
         if memory_enabled:
             result['memory_id']=memory.record(result['run_id'],symbol,arm,result['analysis_time'],final,namespace=memory_namespace)
         dump(folder/'result.json',result);return result

@@ -276,6 +276,9 @@ def run_prompt_research(ticker,*,guide,directory,paid_confirmed=False,config_pat
     # Check before creating output folders or touching credentials. The normal
     # original unknown gate is intentionally preserved for future ad-hoc use.
     authority._check(authority.read())
+    from rag_package import RagPackages
+    frozen=RagPackages().get(guide.get('rag'))
+    if {k:v for k,v in guide.items() if k!='rag'}!=frozen['guide']:raise ValueError('RAG guide changed after freezing')
     from integration.research_memory import ResearchMemory
     memory=ResearchMemory() if memory_enabled else None
     case['memory_snapshot']=memory.context(case['ticker'],at,namespace=memory_namespace,arm='B') if memory else []
@@ -292,7 +295,7 @@ def run_prompt_research(ticker,*,guide,directory,paid_confirmed=False,config_pat
         originals.append({**{k:source.get(k) for k in ('url','title','published_at','version_id','status','eligible')},'text':source.get('body_text','')[:2400]})
     compact={k:v for k,v in found.items() if k!='raw_model_text'}
     result=discuss_case(case,compact,originals,directory=folder/'discussion',config_path=config_path or ROOT.parent/'apikey.env',ledger=authority,run_id=identity+'_discussion')
-    result.update(run_id=identity,native=compact,source_checks=originals,guide_id=guide.get('guide_id'))
+    result.update(run_id=identity,native=compact,source_checks=originals,guide_id=guide.get('guide_id'),rag=guide.get('rag'))
     if result.get('status')=='completed' and memory:
         result['memory_id']=memory.record(identity,case['ticker'],'B',at,result['final'],namespace=memory_namespace)
     dump(folder/'result.json',result);return result

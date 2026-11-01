@@ -314,7 +314,12 @@ class MonitorPlanner:
                     versions.append(row['guide']['version'])
                 if row.get('cache_key') == key: previous.append(row)
             if previous and not refresh:
-                return deepcopy(max(previous, key=lambda row: row['guide']['version'])['guide'])
+                cached=max(previous, key=lambda row: row['guide']['version'])
+                if cached.get('rag'):
+                    from rag_package import RagPackages
+                    RagPackages().verify(cached,cached['rag'])
+                    return {**deepcopy(cached['guide']),'rag':deepcopy(cached['rag'])}
+                # Legacy guides remain readable, but a new delivery is registered below.
             relations, sources, rejected = self._relations(ticker, at, historical)
             topics = self._topics(ticker, relations, at)
             identity = 'MG_'+uuid.uuid4().hex
@@ -325,12 +330,15 @@ class MonitorPlanner:
                 status='ready' if relations else 'insufficient', analysis_time=at.isoformat(),
                 temporal_mode='strict_historical' if historical else 'current_as_collected',
                 model_requests=0, planner_version=PLANNER_VERSION)
-            self._write('guides', identity, dict(guide=guide, sources=sources, relations=relations,
+            record=dict(guide=guide, sources=sources, relations=relations,
                 rejected_relations=rejected, cache_key=key, requested_as_of=time_key,
                 analysis_time=at.isoformat(), historical=historical, knowledge_fingerprint=fingerprint,
                 evidence_ids=_unique(eid for r in relations for eid in r['evidence_ids']),
-                source_versions={s['source_id']:s['source_sha256'] for s in sources}))
-            return deepcopy(guide)
+                source_versions={s['source_id']:s['source_sha256'] for s in sources})
+            from rag_package import freeze as freeze_package
+            record=freeze_package(record)
+            self._write('guides', identity, record)
+            return {**deepcopy(guide),'rag':deepcopy(record['rag'])}
 
     def get_guide(self, guide_id):
         if not isinstance(guide_id, str) or not re.fullmatch(r'MG_[a-f0-9]{32}', guide_id):
@@ -339,6 +347,12 @@ class MonitorPlanner:
         if not path.is_file(): raise ValueError('guide not found')
         row = json.loads(path.read_text(encoding='utf-8'))
         if row.get('guide', {}).get('guide_id') != guide_id: raise ValueError('guide identity mismatch')
+        if row.get('rag'):
+            from rag_package import RagPackages
+            RagPackages().verify(row,row['rag'])
+            row['guide']={**row['guide'],'rag':deepcopy(row['rag'])}
+        else:
+            row['legacy_unsealed']=True
         return row
 
     @staticmethod
