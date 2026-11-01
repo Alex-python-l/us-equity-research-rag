@@ -15,6 +15,7 @@ from lexical import KeywordIndex,freeze,eligible,tokenize,encode_cursor,decode_c
 from provenance import build_links,location_key
 from tools import CompanyTools,INVERSE
 from retrieval_v3 import keyword_candidates,diversify,ALGORITHM
+from retrieval_config import RetrievalConfig
 
 @dataclass(frozen=True)
 class ResearchBudget:
@@ -77,7 +78,8 @@ def technical_coverage(question,citations):
   'coverage_check':'deterministic explicit technical-token coverage; not a semantic answer-sufficiency model'}
 
 class ResearchEngine:
- def __init__(self,backend='local',config=None,*,chunks=None,index_path=None,tools=None):
+ def __init__(self,backend='local',config=None,*,chunks=None,index_path=None,tools=None,retrieval_config=None):
+  self.retrieval_config=RetrievalConfig.from_value(retrieval_config)
   self.tools=tools or CompanyTools(backend,config);self.backend=backend;self.config=config
   if chunks is None and backend=='neo4j':
    from neo4j_store import connect
@@ -229,7 +231,7 @@ class ResearchEngine:
  def build(self,ticker,question,as_of,budget=None,*,cursor=None,mode='unified',session_context=None,temporal_context=None):
   b=ResearchBudget.from_value(budget);identity=resolve_company(ticker);symbol=identity['research_symbol']
   if not isinstance(question,str) or not question.strip() or len(question)>8000:raise ValueError('question must be 1..8000 characters')
-  if mode not in ['unified','graph','dense']:raise ValueError('mode must be unified, graph or dense')
+  if mode not in ['unified','graph','dense','keyword']:raise ValueError('unsupported retrieval mode')
   at,historical=freeze(as_of);offset=0;page=1;previous_ids=[]
   if temporal_context is not None:
    if not isinstance(temporal_context,dict) or set(temporal_context)!={'analysis_time','historical'}:
@@ -262,7 +264,7 @@ class ResearchEngine:
     retrieval_query=question+' '+' '.join(focus)
    memory_seeds=session_context.get('seed_entity_ids',[])[:b.max_expanded_entities]
    accepted_memory={**session_context,'chunk_ids':memory_chunks,'focus_terms':focus,'seed_entity_ids':memory_seeds}
-  key=sha(json.dumps([ALGORITHM,symbol,question,retrieval_query,memory_chunks,at.isoformat(),historical,asdict(b),mode,fp],sort_keys=True,ensure_ascii=False))
+  key=sha(json.dumps([ALGORITHM,self.retrieval_config.version,symbol,question,retrieval_query,memory_chunks,at.isoformat(),historical,asdict(b),mode,fp],sort_keys=True,ensure_ascii=False))
   if cursor and cur.get('query_key')!=key:raise ValueError('research cursor/query/budget/data version mismatch')
   trace=[];keyword=None;dense=None;graph=None;calls=0;executed_channels=set()
   allowed_evidence={eid for eid,e in self.tools.evidence.items() if eligible(e,at,historical)}
@@ -274,7 +276,7 @@ class ResearchEngine:
    if channel=='keyword':
     reserved=sum(ch not in executed_channels and (ch!='reviewed_dense' or b.use_dense) for ch in channels)
     keyword=keyword_candidates(self.index,retrieval_query,symbol,at,historical,b.keyword_candidates,
-     max(1,b.max_tool_calls-calls+1-reserved))
+     max(1,b.max_tool_calls-calls+1-reserved),config=self.retrieval_config)
     calls+=keyword['query_calls']-1
     trace.append({'tool':'keyword_search','eligible_chunks':keyword['eligible_chunks'],'hits':len(keyword['hits']),
      'statistics_scope':keyword['statistics_scope'],'queries':keyword['queries'],
@@ -297,7 +299,8 @@ class ResearchEngine:
     graph=self.graph_search(symbol,retrieval_query,at,historical,b,seeds)
     trace.append({'tool':'typed_graph_search','enumerated_paths':len(graph['paths']),'expanded_entity_ids':graph['expanded_entity_ids'],
      'max_hops':b.max_hops,'enumeration_truncated':graph['enumeration_truncated']})
-  channels=route['preferred_channels'] if mode=='unified' else (['graph'] if mode=='graph' else ['reviewed_dense'])
+  channels=route['preferred_channels'] if mode=='unified' else ([mode] if mode in ('graph','keyword') else ['reviewed_dense'])
+  channels=[ch for ch in channels if ch in self.retrieval_config.channels]
   cached=self._retrieval_cache.get(key)
   if cached:
    keyword,dense,graph,executed_channels=cached
@@ -343,15 +346,17 @@ class ResearchEngine:
    for rank,eid in enumerate(dict.fromkeys(eids),1):
     for cid in self.e2c[eid]:ranks[cid].setdefault('graph',rank)
   # All channels normalize onto exact original chunks; dedup does not invent equivalence.
-  weights={'keyword':3.0 if route['intent']=='disclosure_detail' else 1.5,'reviewed_dense':1.0,'graph':1.5 if route['intent']!='disclosure_detail' else 0.5,'session':1.0}
+  weights=self.retrieval_config.weights(route['intent'])
   fused=[]
   for cid,channel_ranks in ranks.items():
    c=self.chunks_by_id[cid]
    if not eligible(c,at,historical):continue
-   score=sum(weights[ch]/(60+rank) for ch,rank in channel_ranks.items())
+   score=sum(weights[ch]/(self.retrieval_config.rrf_k+rank) for ch,rank in channel_ranks.items())
    fused.append((cid,score))
   fused.sort(key=lambda x:(-x[1],x[0]))
-  if mode=='unified':fused=diversify(fused,self.chunks_by_id,retrieval_query,keyword)
+  if mode=='unified' and self.retrieval_config.diversify:fused=diversify(fused,self.chunks_by_id,retrieval_query,keyword,self.retrieval_config)
+  self.last_ranking_audit={'config_version':self.retrieval_config.version,'config':asdict(self.retrieval_config),
+   'candidates':[{'chunk_id':cid,'score':score,'channel_ranks':ranks[cid]} for cid,score in fused]}
   citations={};selected=[];rejected=[];text_chars=0;processed=offset;context_ids=[]
   def add_chunk(cid,channel='retrieved',limit=None):
    nonlocal text_chars

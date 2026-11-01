@@ -51,7 +51,9 @@ def _match(groups):
  return ' AND '.join(expressions)
 
 
-def keyword_candidates(index,question,ticker,at,historical,limit,max_calls):
+def keyword_candidates(index,question,ticker,at,historical,limit,max_calls,config=None):
+ from retrieval_config import RetrievalConfig
+ config=RetrievalConfig.from_value(config)
  fp,(db,rows)=index.snapshot(at,historical)
  facets=query_facets(question)
  # Each facet is an actual counted source query. Keep a slot for the full
@@ -61,7 +63,7 @@ def keyword_candidates(index,question,ticker,at,historical,limit,max_calls):
  plans=plans[:max(1,min(max_calls,limit))]
  base=max(1,limit//len(plans));quotas=[base]*len(plans)
  quotas[0]+=limit-sum(quotas)
- db.create_function('source_soft',1,lambda cid:1.25 if index.by_id[cid].get('ticker')==ticker else 1.0)
+ db.create_function('source_soft',1,lambda cid:config.ticker_preference if index.by_id[cid].get('ticker')==ticker else 1.0)
  merged={};total=0;queries=[]
  for plan,quota in zip(plans,quotas):
   match=_match(plan['groups'])
@@ -76,7 +78,7 @@ def keyword_candidates(index,question,ticker,at,historical,limit,max_calls):
  # Facets intentionally carry equal per-rank weight: a short precise source
  # paragraph should compete with an unrelated long card matching many words.
  hits=list(merged.values())
- for h in hits:h['facet_score']=sum((1.0 if k=='whole_question' else 1.5)/(20+r) for k,r in h['facet_ranks'].items())
+ for h in hits:h['facet_score']=sum((1.0 if k=='whole_question' else config.facet_weight)/(config.facet_k+r) for k,r in h['facet_ranks'].items())
  hits.sort(key=lambda h:(-h['facet_score'],h['chunk_id']))
  for i,h in enumerate(hits,1):h['rank']=i
  return {'hits':hits,'analysis_time':at.isoformat(),'eligible_chunks':len(rows),'eligible_corpus_fingerprint':fp,
@@ -85,12 +87,14 @@ def keyword_candidates(index,question,ticker,at,historical,limit,max_calls):
   'source_policy':'ticker soft 1.25 BM25 preference; cross-company disclosures retained'}
 
 
-def diversify(fused,chunks,question,keyword):
+def diversify(fused,chunks,question,keyword,config=None):
  """Greedy per-facet coverage with a mild same-location redundancy penalty.
 
 No original text is admitted here: these are already bounded channel candidates.
 The sorted full candidate sequence makes frozen pagination deterministic.
 """
+ from retrieval_config import RetrievalConfig
+ config=RetrievalConfig.from_value(config)
  facet_rows={h['chunk_id']:h.get('facet_ranks',{}) for h in (keyword or {}).get('hits',[])}
  remaining=list(fused);out=[];seen_facets=defaultdict(int);seen_locations=defaultdict(int)
  while remaining:
@@ -99,7 +103,7 @@ The sorted full candidate sequence makes frozen pagination deterministic.
    c=chunks[cid];facets=facet_rows.get(cid,{})
    novelty=sum(1/(rank*rank)/(1+seen_facets[name]) for name,rank in facets.items() if name!='whole_question')
    loc=(c['source_id'],c.get('pdf_page'),c.get('paragraph'))
-   adjusted=score+0.055*novelty-0.004*min(seen_locations[loc],3)
+   adjusted=score+config.novelty*novelty-config.location_penalty*min(seen_locations[loc],3)
    scored.append((adjusted,cid,score,loc))
   _,cid,score,loc=min(scored,key=lambda x:(-x[0],x[1]))
   out.append((cid,score));remaining.remove((cid,score));seen_locations[loc]+=1
