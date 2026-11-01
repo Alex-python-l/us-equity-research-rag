@@ -8,7 +8,10 @@ INVERSE={'SUPPLIES_TO':'SUPPLIED_BY','MANUFACTURES_FOR':'MANUFACTURED_BY','ASSEM
  'DESIGNED_FOR':'DESIGNED_COMPONENT_FROM','MANUFACTURED_USING':'PROCESS_USED_BY'}
 
 class CompanyTools:
- def __init__(self,backend='local',config=None):
+ def __init__(self,backend='local',config=None,*,snapshot=None):
+  from knowledge_versions import active_snapshot
+  self.snapshot=snapshot or active_snapshot()
+  artifact=self.snapshot.file
   if backend not in ['local','neo4j']:raise ValueError('backend must be local or neo4j')
   self.backend=backend;self.config=config
   if backend=='neo4j':
@@ -17,8 +20,8 @@ class CompanyTools:
    self.entities={r['entity_id']:r for r in data['entities']};self.relations=data['relations']
    self.evidence={r['evidence_id']:r for r in data['evidence']};self.sources={r['source_id']:r for r in data['sources']}
   else:
-   self.entities={r['entity_id']:r for r in load(ROOT/'output/entities.json')};self.relations=load(ROOT/'output/relations.json')
-   self.evidence={r['evidence_id']:r for r in load(ROOT/'output/evidence.json')};self.sources={r['source_id']:r for r in load(ROOT/'output/source_catalog.json')}
+   self.entities={r['entity_id']:r for r in load(artifact('entities.json'))};self.relations=load(artifact('relations.json'))
+   self.evidence={r['evidence_id']:r for r in load(artifact('evidence.json'))};self.sources={r['source_id']:r for r in load(artifact('source_catalog.json'))}
   self.fingerprint=sha(json.dumps({'r':self.relations,'e':list(self.evidence.values())},sort_keys=True,ensure_ascii=False))
   self._verified_source_hashes={}
 
@@ -130,9 +133,9 @@ class CompanyTools:
    if parse_time(e['available_at'])>at or (historical and not e['historical_eligible']):
     missing.append({'evidence_id':eid,'reason':'not_available_or_historical_version_unverified'});continue
    source=self.sources[e['source_id']]
-   if not source.get('text_path') or not (ROOT/source['text_path']).exists():
+   if not source.get('text_path') or not (self.snapshot.root/source['text_path']).exists():
     missing.append({'evidence_id':eid,'reason':'local_original_text_missing'});continue
-   raw=ROOT/source['local_path']
+   raw=self.snapshot.root/source['local_path']
    if not raw.is_file():missing.append({'evidence_id':eid,'reason':'local_original_missing'});continue
    stat=raw.stat();cache_key=(str(raw),stat.st_size,stat.st_mtime_ns)
    if cache_key not in self._verified_source_hashes:
@@ -140,11 +143,11 @@ class CompanyTools:
     with raw.open('rb') as file:self._verified_source_hashes[cache_key]=hashlib.file_digest(file,'sha256').hexdigest()
    if self._verified_source_hashes[cache_key]!=e['source_sha256']:
     missing.append({'evidence_id':eid,'reason':'original_source_hash_mismatch'});continue
-   rows=readl(ROOT/source['text_path'])
+   rows=readl(self.snapshot.root/source['text_path'])
    match=[b for b in rows if b.get('pdf_page')==e['pdf_page'] and b.get('paragraph')==e['paragraph']]
    valid=any(re.sub(r'\s+',' ',b['text']).strip()[e['char_start']:e['char_end']]==e['quote'] for b in match)
    if not valid:missing.append({'evidence_id':eid,'reason':'locator_round_trip_failed'});continue
-   items.append({**e,'round_trip_verified':True,'local_original':str(ROOT/source['local_path'])})
+   items.append({**e,'round_trip_verified':True,'local_original':str(self.snapshot.root/source['local_path'])})
   return {'items':items,'missing':missing,'analysis_time':at.isoformat()}
 
  def expand_entity(self,entity_id,as_of,limit=20):

@@ -15,7 +15,7 @@ import uuid
 from common import ROOT, parse_time
 from lexical import eligible
 
-PLANNER_VERSION = 'monitor_planner_v4'
+PLANNER_VERSION = 'monitor_planner_v5_frozen'
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 CATEGORIES = [('upstream', '上游供给'), ('downstream', '下游需求'),
@@ -85,14 +85,18 @@ class MonitorPlanner:
     def __init__(self, state_dir=None, engine=None):
         self.state = Path(state_dir or ROOT/'state/news_monitor/planner').resolve()
         self._engine = engine
+        self._injected_engine = engine is not None
         with _LOCKS_GUARD:
             self.lock = _LOCKS.setdefault(str(self.state), threading.RLock())
 
     @property
     def engine(self):
-        if self._engine is None:
+        if getattr(self,'_pinned_engine',None) is not None:return self._pinned_engine
+        from knowledge_versions import active_snapshot
+        snapshot=active_snapshot()
+        if self._engine is None or (not self._injected_engine and self._engine.snapshot.generation!=snapshot.generation):
             from research import ResearchEngine
-            self._engine = ResearchEngine('local')
+            self._engine = ResearchEngine('local',snapshot=snapshot)
         return self._engine
 
     def _write(self, folder, identity, value):
@@ -117,7 +121,7 @@ class MonitorPlanner:
                     versions.append((source['source_id'], field, stat.st_size, stat.st_mtime_ns))
                 except OSError:
                     versions.append((source['source_id'], field, 'missing'))
-        return _sha([PLANNER_VERSION, engine.fingerprint(at, historical), sorted(versions)])
+        return _sha([PLANNER_VERSION, getattr(getattr(engine,'snapshot',None),'generation','legacy'),engine.fingerprint(at, historical), sorted(versions)])
 
     def _evidence(self, evidence_id, at, historical, verified):
         engine = self.engine
@@ -301,6 +305,12 @@ class MonitorPlanner:
         return '\n'.join(lines)
 
     def guide(self, ticker, as_of='current', refresh=False):
+        with self.lock:
+            self._pinned_engine=self.engine
+            try:return self._guide(ticker,as_of,refresh)
+            finally:self._pinned_engine=None
+
+    def _guide(self, ticker, as_of='current', refresh=False):
         ticker = _ticker(ticker)
         at, historical, time_key = _clock(as_of)
         if type(refresh) is not bool: raise ValueError('refresh must be boolean')

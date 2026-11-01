@@ -28,7 +28,9 @@ def qualify_record(record,analysis_time,historical):
         'inference_performed':False}
     def fail(reason):return {**result,'reason':reason}
     try:
-        source=next(s for s in json.loads((ROOT/'output/source_catalog.json').read_text(encoding='utf-8'))
+        from knowledge_versions import active_snapshot
+        snapshot=active_snapshot(root=ROOT,generation=record.get('knowledge_generation','legacy'))
+        source=next(s for s in json.loads(snapshot.file('source_catalog.json').read_text(encoding='utf-8'))
                     if s['source_id']==record['source_id'])
         at=_time(analysis_time)
         if historical and source.get('historical_eligible') is not True:return fail('historical_version_not_verified')

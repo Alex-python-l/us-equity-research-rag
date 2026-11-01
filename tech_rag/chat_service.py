@@ -34,7 +34,12 @@ class RAGChat:
     def retrieve(self,ticker,question,as_of,budget,**kwargs):
         if self._retrieve:return self._retrieve(ticker,question,as_of,budget=budget,**kwargs)
         from research import ResearchEngine
-        if self._engine is None:self._engine=ResearchEngine('local')
+        from knowledge_versions import active_snapshot
+        from lexical import decode_cursor
+        cursor=kwargs.get('cursor')
+        snapshot=active_snapshot(generation=decode_cursor(cursor).get('generation','legacy') if cursor else None)
+        if self._engine is None or self._engine.snapshot.generation!=snapshot.generation:
+            self._engine=ResearchEngine('local',snapshot=snapshot)
         return self._engine.build(ticker,question,as_of,budget,**kwargs)
 
     @staticmethod

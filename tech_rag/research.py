@@ -78,9 +78,12 @@ def technical_coverage(question,citations):
   'coverage_check':'deterministic explicit technical-token coverage; not a semantic answer-sufficiency model'}
 
 class ResearchEngine:
- def __init__(self,backend='local',config=None,*,chunks=None,index_path=None,tools=None,retrieval_config=None):
+ def __init__(self,backend='local',config=None,*,chunks=None,index_path=None,tools=None,retrieval_config=None,snapshot=None):
+  from knowledge_versions import active_snapshot
+  self.snapshot=snapshot or getattr(tools,'snapshot',None) or active_snapshot()
   self.retrieval_config=RetrievalConfig.from_value(retrieval_config)
-  self.tools=tools or CompanyTools(backend,config);self.backend=backend;self.config=config
+  self.tools=tools or CompanyTools(backend,config,snapshot=self.snapshot);self.backend=backend;self.config=config
+  if backend=='neo4j' and self.snapshot.generation!='legacy':raise ValueError('Neo4j generation not verified; select the local snapshot backend')
   if chunks is None and backend=='neo4j':
    from neo4j_store import connect
    driver,info=connect(config);chunks=[]
@@ -92,8 +95,8 @@ class ResearchEngine:
       if len(page)<500:break
      else:raise RuntimeError('Tech chunk backend scan cap reached')
    finally:driver.close()
-  self.chunks=chunks if chunks is not None else readl(ROOT/'output/chunks.jsonl')
-  self.index=KeywordIndex(index_path or ROOT/f'state/tech_lexical_{backend}.sqlite3',self.chunks)
+  self.chunks=chunks if chunks is not None else readl(self.snapshot.file('chunks.jsonl'))
+  self.index=KeywordIndex(index_path or ROOT/f'state/tech_lexical_{backend}_{self.snapshot.generation}.sqlite3',self.chunks)
   self.chunks_by_id=self.index.by_id
   self.links=build_links(chunks=self.chunks,evidence=list(self.tools.evidence.values()),relations=self.tools.relations)
   self.e2c=defaultdict(list);self.c2e=defaultdict(list);self.e2r=defaultdict(list)
@@ -115,7 +118,7 @@ class ResearchEngine:
  def dense_search(self,question,at,historical,top_k):
   if self._dense is None:
    from dense import DenseRetriever
-   self._dense=DenseRetriever(self.backend,self.config)
+   self._dense=DenseRetriever(self.backend,self.config,snapshot=self.snapshot)
   return self._dense.search(question,at,historical,top_k)
 
  def has_cached_cursor(self,cursor):
@@ -166,7 +169,7 @@ class ResearchEngine:
  def verify_chunk(self,c):
   s=self.tools.sources.get(c['source_id'])
   if not s or not s.get('text_path') or not s.get('local_path'):return False,'original_missing'
-  raw=ROOT/s['local_path'];text=ROOT/s['text_path']
+  raw=self.snapshot.root/s['local_path'];text=self.snapshot.root/s['text_path']
   if not raw.is_file() or not text.is_file():return False,'original_missing'
   st=raw.stat();key=(str(raw),st.st_size,st.st_mtime_ns)
   if key not in self._hashes:
@@ -196,7 +199,7 @@ class ResearchEngine:
     if lo<=position:position=max(position,hi)
    # Independently round-trip the curated quote as well as each raw chunk.
    source=self.tools.sources[e['source_id']]
-   blocks=readl(ROOT/source['text_path'])
+   blocks=readl(self.snapshot.root/source['text_path'])
    quote_ok=any(re.sub(r'\s+',' ',block['text']).strip()[e['char_start']:e['char_end']]==e['quote']
       for block in blocks if block.get('pdf_page')==e.get('pdf_page') and block.get('paragraph')==e.get('paragraph'))
    evidence_map[eid]={k:e.get(k) for k in ['evidence_id','source_id','source_sha256','pdf_page','paragraph','char_start','char_end','review_status']}
@@ -372,7 +375,7 @@ class ResearchEngine:
    if citation_id in citations or citation_id in previous_ids:return None
    exact_evidence=[eid for eid in self.c2e[cid] if eligible(self.tools.evidence[eid],at,historical) and self.tools.evidence[eid]['char_start']<end and self.tools.evidence[eid]['char_end']>start]
    source=self.tools.sources[c['source_id']]
-   citations[citation_id]={'citation_id':citation_id,'chunk_id':cid,'source_id':c['source_id'],'source_sha256':c['source_sha256'],
+   citations[citation_id]={'knowledge_generation':self.snapshot.generation,'citation_id':citation_id,'chunk_id':cid,'source_id':c['source_id'],'source_sha256':c['source_sha256'],
     'source_url':c['source_url'],'title':source['title'],'report_period':c.get('report_period'),
     'published_at':source.get('published_at'),'actual_public_at':source.get('actual_public_at'),
     'availability_basis':source.get('availability_basis'),'available_at':c['available_at'],'historical_eligible':c['historical_eligible'],
@@ -380,7 +383,7 @@ class ResearchEngine:
     'coordinate_system':'normalized whitespace Unicode, half-open [start,end)','section':c.get('section'),
     'table_policy':c.get('table_policy'),'round_trip_verified':True,'review_status':'raw_original_unreviewed_as_relation',
     'overlapping_reviewed_evidence_ids':exact_evidence,'retrieval_role':channel,
-    'excerpt_truncated':available<len(c['text']),'local_original':str(ROOT/source['local_path'])}
+    'excerpt_truncated':available<len(c['text']),'local_original':str(self.snapshot.root/source['local_path'])}
    text_chars+=len(text);return citation_id
   for pos,(cid,score) in enumerate(fused[offset:],offset):
    if len(selected)>=b.max_results:break
@@ -424,7 +427,7 @@ class ResearchEngine:
    'tool_calls':bool(set(ch for ch in channels if ch!='reviewed_dense' or b.use_dense)-executed_channels),
    'path_limit':assembled['paths_omitted_by_budget']>0,'assertion_text_budget':assembled['assertions_omitted_by_budget']>0,'candidate_limit':bool(keyword and keyword['truncated'])}
   page_limit=page>=b.max_pages
-  next_cursor=encode_cursor({'query_key':key,'offset':processed,'page':page+1,'analysis_time':at.isoformat(),'historical':historical,
+  next_cursor=encode_cursor({'generation':self.snapshot.generation,'query_key':key,'offset':processed,'page':page+1,'analysis_time':at.isoformat(),'historical':historical,
    'citation_ids':list(dict.fromkeys(previous_ids+list(citations))),'session_context':accepted_memory}) if remaining and not page_limit else None
   trace.append({'tool':'original_locator_verification','verified_chunks':len(citations),'rejected':rejected,'partial_evidence_spans':sum(not x['fully_covered'] for x in evidence_map.values())})
   conflicts=[]
@@ -436,7 +439,7 @@ class ResearchEngine:
    if len({r['claim'] for r in group})>1:
     conflicts.append({'kind':'wording_difference_requires_review','relation_ids':[r['relation_id'] for r in group],
      'resolution':'未自动判定矛盾；先核对口径、报告期与资料版本。'})
-  model=load(ROOT/'output/model_provenance.json')
+  model=load(self.snapshot.file('model_provenance.json'))
   return {'schema_version':'tech_evidence_packet_v2','dataset_id':DATASET,**identity,'question':question,
    'analysis_time':at.isoformat(),'as_of_input':as_of,'temporal_mode':'strict_historical' if historical else 'current_as_collected','retrieval_query':retrieval_query,
    'backend':self.backend,'route':route,'retrieval_mode':mode,
@@ -454,7 +457,7 @@ class ResearchEngine:
    'budget':asdict(b),'budget_usage':{'text_chars':text_chars,'text_scope':'unique excerpt text + unique assertion claim/condition/business_scope; excludes JSON keys, IDs, audit metadata',
     'retrieval_tool_calls':calls,'locator_verification_mandatory':True},
    'stop_reason':'insufficient_evidence' if insuff else ('page_limit' if page_limit and remaining else ('text_budget' if cap_flags['text_budget'] else ('page_size' if remaining else ('tool_budget' if cap_flags['tool_calls'] else 'candidate_set_exhausted')))),
-   'fingerprints':{'eligible_data':fp,'eligible_keyword_corpus':self.index.snapshot(at,historical)[0],
+   'fingerprints':{'knowledge_generation':self.snapshot.generation,'retrieval_config_version':self.retrieval_config.version,'eligible_data':fp,'eligible_keyword_corpus':self.index.snapshot(at,historical)[0],
     'embedding_signature':sha(json.dumps(model,sort_keys=True)),'embedding_model':model['model'],'embedding_revision':model['revision'],
     'retrieval_algorithm':ALGORITHM,'fusion_weights':weights},
    'trace':trace,'answer_contract':'研究证据包；相关性不代表可信度，图上可达不代表交易关系或因果，禁止实名匿名客户及确定收益外推。'}
@@ -466,7 +469,10 @@ def build_research_context(ticker,question,as_of,budget=None,*,backend='local',c
  Use a ResearchEngine instance for a multi-call session. This convenience API
  reloads if local artifacts change; Neo4j always constructs a fresh snapshot.
  """
- stat=tuple((p.stat().st_size,p.stat().st_mtime_ns) for p in [ROOT/'output/chunks.jsonl',ROOT/'output/relations.json',ROOT/'output/evidence.json',ROOT/'output/source_catalog.json',ROOT/'output/entities.json'])
- key=(backend,str(config),stat)
- if backend=='neo4j' or key not in _engines:_engines[key]=ResearchEngine(backend,config)
+ from knowledge_versions import active_snapshot
+ generation=decode_cursor(cursor).get('generation','legacy') if cursor else None
+ snapshot=active_snapshot(generation=generation)
+ stat=tuple((p.stat().st_size,p.stat().st_mtime_ns) for p in [snapshot.file(n) for n in ('chunks.jsonl','relations.json','evidence.json','source_catalog.json','entities.json')])
+ key=(backend,str(config),snapshot.generation,stat)
+ if backend=='neo4j' or key not in _engines:_engines[key]=ResearchEngine(backend,config,snapshot=snapshot)
  return _engines[key].build(ticker,question,as_of,budget,cursor=cursor,temporal_context=temporal_context)
